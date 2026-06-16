@@ -34,6 +34,13 @@ def _resolve_server(conn, project_id, server_arg):
 
 def attach_storage(cloud, server_arg=None, size=None, type_name=None,
                    disk=None, dry_run=False):
+    # --disk attaches an existing volume that already has its own size/type, so
+    # combining it with --size/--type is contradictory -- refuse up front.
+    if disk and (size is not None or type_name is not None):
+        err("--size/--type cannot be combined with --disk (an existing volume "
+            "already has its own size and type).")
+        return None
+
     conn = connect(cloud)
     project_id, _ = current_project(conn)
     audit.audit("attachstorage.start", cloud=cloud, project=project_id,
@@ -46,7 +53,7 @@ def attach_storage(cloud, server_arg=None, size=None, type_name=None,
 
     # --disk: attach an EXISTING volume instead of creating a new one.
     if disk:
-        return _attach_existing(conn, server, disk, size, type_name, dry_run)
+        return _attach_existing(conn, server, disk, dry_run)
 
     header("Data volume")
     pool_free, quota_gb = show_capacity(conn, project_id)
@@ -88,17 +95,13 @@ def _attached_servers(conn, volume):
     return ", ".join(names) or "(unknown)"
 
 
-def _attach_existing(conn, server, volume_id, size, type_name, dry_run):
+def _attach_existing(conn, server, volume_id, dry_run):
     """Attach a pre-existing volume to `server`, defensively.
 
     Refuses unless the volume exists, belongs to the same project, and is
     `available` (unattached/healthy). NEVER creates, modifies, or deletes the
     volume -- on any failure the volume is left exactly as it was.
     """
-    if size is not None or type_name is not None:
-        warn("--disk given: ignoring --size/--type (attaching the existing "
-             "volume as-is).")
-
     header("Attach existing volume")
     volume = conn.block_storage.find_volume(volume_id, ignore_missing=True)
     if volume is None:

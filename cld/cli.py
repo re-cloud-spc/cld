@@ -63,9 +63,9 @@ def build_parser():
                                "creating one; attaches only if it's available "
                                "and unattached")
     p_attach.add_argument("--size", type=int, help="volume size in GB "
-                          "(ignored with --disk)")
+                          "(not allowed with --disk)")
     p_attach.add_argument("--type", dest="type_name", help="volume type "
-                          "(ignored with --disk)")
+                          "(not allowed with --disk)")
     p_attach.add_argument("--dry-run", action="store_true",
                           help="show what would be created/attached; change nothing")
 

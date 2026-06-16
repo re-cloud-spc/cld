@@ -156,8 +156,8 @@ python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --size 50 --d
 | `--cloud NAME` | cloud (= project) the server lives in |
 | `--serverid ID` | target server ID (otherwise lists the project's servers to pick) |
 | `--disk VOLUME_ID` | attach an existing volume by ID instead of creating one; attaches only if it's `available` and unattached, and never alters the volume on failure |
-| `--size GB` | volume size for a new volume (ignored with `--disk`) |
-| `--type TYPE` | volume type, e.g. an encrypted/LUKS type (ignored with `--disk`) |
+| `--size GB` | volume size for a new volume (not allowed with `--disk`) |
+| `--type TYPE` | volume type, e.g. an encrypted/LUKS type (not allowed with `--disk`) |
 | `--dry-run` | show what would be created/attached, change nothing |
 
 Before you commit it shows **true SDS capacity** (Cinder pool total / free /
