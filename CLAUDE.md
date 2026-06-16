@@ -55,7 +55,9 @@ suite — a Python 3 package run directly. Subcommands:
   server (capacity/quota → size/type → confirm → create+attach).
 - `cld list [resource]` — read-only inventory (servers/volumes/flavors/images/
   networks/azs/capacity/clouds); default `servers`, current project unless
-  `--all-projects`. `volumes` shows each Cinder volume + the VM it's attached to.
+  `--all-projects`. `volumes` shows each Cinder volume + the VM it's attached to +
+  created/updated (UTC). Cinder has no last-accessed/I/O timestamp, so `updated_at`
+  (last record change) is the recency stand-in — don't try to add "last accessed".
 - `cld check` — authenticate, print the scoped project/user, exit (env-immune).
 
 Entry points: `python3 cld.py <sub>` or `python3 -m cld <sub>`; a bare invocation or
@@ -78,7 +80,10 @@ listcmd.py    read-only `cld list` orchestrator (reuses steps.render_*, volume.s
 volume.py     SDS capacity + quota display; show_capacity() / prompt_volume_spec()
 vm.py         build_payload, _reserve_port, create_vm (NO volume), _offer_rollback (default=False),
               print_summary; key_names()/_keypair_user_data() split SSH keys across Nova + cloud-init
-storage.py    attach_storage() + _offer_volume_rollback (volume-only, never the server)
+storage.py    attach_storage(): create+attach a new volume, OR with --disk attach an
+              EXISTING volume (_attach_existing: only if available/unattached/same-project,
+              and NEVER modifies/deletes the pre-existing volume); _offer_volume_rollback
+              (deletes only volumes cld created, never the server) 
 init.py       credential bootstrap (connect_admin, ensure_admin_role, merge_clouds_entry)
 answers.py    save/load a createvm spec (YAML)
 audit.py      runtime logging wiring -> logs/cld-<date>.log; audit()/warn()

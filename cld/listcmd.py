@@ -82,6 +82,12 @@ def _render_servers(conn, all_projects):
     render_table("Servers", columns, rows)
 
 
+def _fmt_ts(s):
+    """'2026-06-16T13:29:45.000000' -> '2026-06-16 13:29' (UTC); '-' if missing.
+    Pure string slicing -- no datetime parsing, tolerant of None/odd values."""
+    return (s or "").replace("T", " ")[:16] or "-"
+
+
 def _attachment_str(volume, smap):
     """'<vm-name> (<device>)' for each attachment, joined; '-' if unattached.
     Server ids that aren't in the map fall back to the raw id."""
@@ -102,7 +108,8 @@ def _render_volumes(conn, all_projects):
     volumes = safe_list(conn.block_storage.volumes, details=True,
                         all_projects=all_projects)
     volumes.sort(key=lambda v: (getattr(v, "name", "") or "").lower())
-    columns = ["name", "id", "size", "status", "type", "boot", "attached to"]
+    columns = ["name", "id", "size", "status", "type", "boot", "attached to",
+               "created", "updated"]
     if all_projects:
         columns.append("project")
     rows = []
@@ -110,8 +117,26 @@ def _render_volumes(conn, all_projects):
         row = [getattr(v, "name", "") or "(unnamed)", v.id, f"{v.size} GB",
                getattr(v, "status", "?"), getattr(v, "volume_type", "?"),
                "yes" if getattr(v, "is_bootable", False) else "no",
-               _attachment_str(v, smap)]
+               _attachment_str(v, smap),
+               _fmt_ts(getattr(v, "created_at", None)),
+               _fmt_ts(getattr(v, "updated_at", None))]
         if all_projects:
             row.append(getattr(v, "project_id", None) or "-")
         rows.append(row)
     render_table("Volumes", columns, rows)
+    _render_volume_totals(volumes)
+
+
+def _is_attached(v):
+    return bool(getattr(v, "attachments", None)) or getattr(v, "status", None) == "in-use"
+
+
+def _render_volume_totals(volumes):
+    def total(pred):
+        return sum(int(getattr(v, "size", 0) or 0) for v in volumes if pred(v))
+    attached = total(_is_attached)
+    unattached = total(lambda v: not _is_attached(v))
+    available = total(lambda v: getattr(v, "status", None) == "available")
+    out(f"[dim]Totals: {len(volumes)} volumes, {attached + unattached:,} GB — "
+        f"attached {attached:,} GB, unattached {unattached:,} GB "
+        f"(of which available {available:,} GB)[/dim]")

@@ -98,7 +98,7 @@ python3 cld.py list clouds                   # configured clouds.yaml entries (n
 | resource | shows |
 |----------|-------|
 | `servers` (default) | name, ID, status, flavor, IP, AZ (`+ project` with `--all-projects`) |
-| `volumes` | Cinder volumes: size, status, type, bootable, and the VM each is attached to |
+| `volumes` | Cinder volumes: size, status, type, bootable, the VM each is attached to, and created/updated (UTC) — `updated` is the last record change (attach/resize/status), not data access. Footer totals attached / unattached / available GB |
 | `flavors` | vCPU / RAM / root disk + how many servers use each |
 | `images` | visibility, size, min-disk/ram, signed, in-use count |
 | `networks` | networks + subnets: CIDR, gateway, kind, port count |
@@ -128,6 +128,9 @@ python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-...
 
 # Non-interactive volume add:
 python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --size 50 --type encrypted
+
+# Attach an EXISTING volume by ID (instead of creating one):
+python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --disk dedf1d0a-...
 ```
 
 ### `createvm` flags
@@ -145,8 +148,9 @@ python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --size 50 --t
 |------|--------|
 | `--cloud NAME` | cloud (= project) the server lives in |
 | `--serverid ID` | target server ID (otherwise lists the project's servers to pick) |
-| `--size GB` | volume size (otherwise prompts) |
-| `--type TYPE` | volume type, e.g. an encrypted/LUKS type (otherwise prompts) |
+| `--disk VOLUME_ID` | attach an existing volume by ID instead of creating one; attaches only if it's `available` and unattached (never alters the volume on failure) |
+| `--size GB` | volume size for a new volume (ignored with `--disk`) |
+| `--type TYPE` | volume type, e.g. an encrypted/LUKS type (ignored with `--disk`) |
 | `--dry-run` | show what would be created/attached, change nothing |
 
 ## What "inventory" means at each step

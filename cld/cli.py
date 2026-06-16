@@ -58,8 +58,14 @@ def build_parser():
     p_attach.add_argument("--cloud", help="cloud name from clouds.yaml")
     p_attach.add_argument("--serverid", help="target server ID "
                           "(otherwise you're prompted)")
-    p_attach.add_argument("--size", type=int, help="volume size in GB")
-    p_attach.add_argument("--type", dest="type_name", help="volume type")
+    p_attach.add_argument("--disk", metavar="VOLUME_ID",
+                          help="attach an existing volume by ID instead of "
+                               "creating one; attaches only if it's available "
+                               "and unattached")
+    p_attach.add_argument("--size", type=int, help="volume size in GB "
+                          "(ignored with --disk)")
+    p_attach.add_argument("--type", dest="type_name", help="volume type "
+                          "(ignored with --disk)")
     p_attach.add_argument("--dry-run", action="store_true",
                           help="show what would be created/attached; change nothing")
 
@@ -156,7 +162,8 @@ def cmd_createvm(args):
 def cmd_attachstorage(args):
     cloud = select_cloud(args.cloud)
     attach_storage(cloud, server_arg=args.serverid, size=args.size,
-                   type_name=args.type_name, dry_run=args.dry_run)
+                   type_name=args.type_name, disk=args.disk,
+                   dry_run=args.dry_run)
     return 0
 
 
