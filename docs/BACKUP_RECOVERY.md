@@ -41,8 +41,9 @@ openstack volume service list      # look for a cinder-backup host that is up/en
 | absent / down | **snapshots and server images only** — no true DR yet |
 
 If it is absent, real off-pool backup is not possible until it is deployed (a
-Kolla-Ansible / cluster task — raise it on `re-cloud-spc/rc3` with the `automation`
-label). Do not let snapshots masquerade as a backup plan in the meantime.
+Kolla-Ansible / cluster task — tracked in
+[re-cloud-spc/cld#3](https://github.com/re-cloud-spc/cld/issues/3)). Do not let
+snapshots masquerade as a backup plan in the meantime.
 
 Before any large or scheduled run, check there is room for it:
 
@@ -232,8 +233,9 @@ A backup you have never restored is a hope, not a backup.
 - **Snapshots are not DR.** Even a `cinder-backup` target in a *second Ceph pool on
   the same physical cluster* is better than a snapshot but still **not off-site**. For
   true DR, the cluster needs an off-host backup target or **RBD mirroring to a
-  separate Ceph cluster** — out of scope for the `openstack` CLI and for `cld`; raise
-  it as a cluster-architecture item on `re-cloud-spc/rc3`.
+  separate Ceph cluster** — out of scope for the `openstack` CLI and for `cld`. The
+  off-pool `cinder-backup` deployment (and the RBD-mirroring follow-up) is tracked in
+  [re-cloud-spc/cld#3](https://github.com/re-cloud-spc/cld/issues/3).
 - **`cld` does not automate any of this.** Every command here is operator-run or
   driven by a cron script you reviewed.
 
