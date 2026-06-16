@@ -259,3 +259,10 @@ sudo mount -a                     # verify the fstab entry
   hosts in no such aggregate show under `(unmapped)`.
 - Optional raw-Ceph cross-check (needs Ceph admin on a host, not the OpenStack
   API): `ceph df` shows pool usage behind the Cinder figures.
+
+## 10. See also
+
+- **Backing up and recovering VMs and volumes** —
+  [BACKUP_RECOVERY.md](BACKUP_RECOVERY.md): Cinder snapshots vs off-pool backups,
+  server snapshots, full-VM-consistent sets, recovery recipes, and scheduled backups
+  with retention. (`cld` does not perform backups; these are operator procedures.)

@@ -159,6 +159,16 @@ access (no SSH keys, no hypervisor/libvirt), so after a successful attach it pri
 the device and the `lsblk`/`mkfs` (blank disks only)/`mount`/`fstab` steps to run
 inside the VM. See [docs/USAGE.md](docs/USAGE.md#mounting-the-attached-volume).
 
+## Backup & recovery
+
+`cld` does not perform backups; see the operator runbook
+[docs/BACKUP_RECOVERY.md](docs/BACKUP_RECOVERY.md) for how to back up and recover VMs
+and volumes (Cinder snapshots vs off-pool backups, server snapshots, full-VM
+consistency, on-demand and scheduled+retention). Two things to internalise first: a
+Cinder *snapshot* lives in the same Ceph pool as its source (a rollback point, **not**
+disaster recovery), and online backups are **crash-consistent** because `cld` has no
+in-guest access.
+
 ## What "inventory" means at each step
 
 - **Project** — fixed by the chosen credential; the tool re-confirms the scope.
