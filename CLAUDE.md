@@ -53,8 +53,9 @@ suite — a Python 3 package run directly. Subcommands:
   security → confirm → create → optional floating IP). **No data-volume step.**
 - `cld attachstorage` — create + attach a Cinder data volume to an **existing**
   server (capacity/quota → size/type → confirm → create+attach).
-- `cld list [resource]` — read-only inventory (servers/flavors/images/networks/
-  azs/capacity/clouds); default `servers`, current project unless `--all-projects`.
+- `cld list [resource]` — read-only inventory (servers/volumes/flavors/images/
+  networks/azs/capacity/clouds); default `servers`, current project unless
+  `--all-projects`. `volumes` shows each Cinder volume + the VM it's attached to.
 - `cld check` — authenticate, print the scoped project/user, exit (env-immune).
 
 Entry points: `python3 cld.py <sub>` or `python3 -m cld <sub>`; a bare invocation or

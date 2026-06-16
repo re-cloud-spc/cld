@@ -25,11 +25,13 @@ SUBCOMMANDS = {"init", "createvm", "attachstorage", "check", "list"}
 def build_parser():
     ap = argparse.ArgumentParser(
         prog="cld",
-        description="Interactive Management Tool for Re:Cloud and NanoCloud Admins")
+        description="Interactive Management Tool for Re:Cloud and NanoCloud Admins",
+        allow_abbrev=False)
     sub = ap.add_subparsers(dest="command")
 
     p_init = sub.add_parser(
-        "init", help="mint an app credential + write a clouds.yaml entry")
+        "init", help="mint an app credential + write a clouds.yaml entry",
+        allow_abbrev=False)
     p_init.add_argument("--project", required=True,
                         help="project to scope the application credential to")
     p_init.add_argument("--cloud", help="clouds.yaml entry name (default: project)")
@@ -39,7 +41,8 @@ def build_parser():
                         help="grant the admin role on the project first (for "
                              "cluster-wide inventory visibility)")
 
-    p_create = sub.add_parser("createvm", help="provision a VM (no data volume)")
+    p_create = sub.add_parser("createvm", help="provision a VM (no data volume)",
+                              allow_abbrev=False)
     p_create.add_argument("--cloud", help="cloud name from clouds.yaml")
     p_create.add_argument("--dry-run", action="store_true",
                           help="walk the wizard and print the payload; change "
@@ -50,7 +53,8 @@ def build_parser():
                           help="replay a previously saved spec file")
 
     p_attach = sub.add_parser(
-        "attachstorage", help="create + attach a data volume to an existing server")
+        "attachstorage", help="create + attach a data volume to an existing server",
+        allow_abbrev=False)
     p_attach.add_argument("--cloud", help="cloud name from clouds.yaml")
     p_attach.add_argument("--serverid", help="target server ID "
                           "(otherwise you're prompted)")
@@ -60,19 +64,21 @@ def build_parser():
                           help="show what would be created/attached; change nothing")
 
     p_check = sub.add_parser(
-        "check", help="authenticate, print the scoped project/user, and exit")
+        "check", help="authenticate, print the scoped project/user, and exit",
+        allow_abbrev=False)
     p_check.add_argument("--cloud", help="cloud name from clouds.yaml")
 
     p_list = sub.add_parser(
-        "list", help="show read-only inventory of the cloud")
+        "list", help="show read-only inventory of the cloud",
+        allow_abbrev=False)
     p_list.add_argument("resource", nargs="?", default="servers",
                         choices=RESOURCES,
                         help="what to list (default: servers)")
     p_list.add_argument("--cloud", help="cloud (= project) from clouds.yaml "
                         "(not needed for 'clouds')")
     p_list.add_argument("--all-projects", action="store_true",
-                        help="servers: include every project (admin); default "
-                             "is the current project")
+                        help="servers/volumes: include every project (admin); "
+                             "default is the current project")
 
     return ap
 

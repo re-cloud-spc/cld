@@ -11,8 +11,8 @@ from cld.steps import render_flavors, render_images, render_networks, render_azs
 from cld.ui import out, header, render_table
 from cld.volume import show_capacity
 
-RESOURCES = ["clouds", "servers", "flavors", "images", "networks", "azs",
-             "capacity"]
+RESOURCES = ["clouds", "servers", "volumes", "flavors", "images", "networks",
+             "azs", "capacity"]
 
 
 def run_list(resource, cloud_arg, all_projects=False):
@@ -27,6 +27,8 @@ def run_list(resource, cloud_arg, all_projects=False):
 
     if resource == "servers":
         _render_servers(conn, all_projects)
+    elif resource == "volumes":
+        _render_volumes(conn, all_projects)
     elif resource == "flavors":
         render_flavors(conn, Inventory(conn))
     elif resource == "images":
@@ -78,3 +80,38 @@ def _render_servers(conn, all_projects):
             row.append(getattr(s, "project_id", None) or "-")
         rows.append(row)
     render_table("Servers", columns, rows)
+
+
+def _attachment_str(volume, smap):
+    """'<vm-name> (<device>)' for each attachment, joined; '-' if unattached.
+    Server ids that aren't in the map fall back to the raw id."""
+    parts = []
+    for a in (getattr(volume, "attachments", None) or []):
+        sid = a.get("server_id")
+        dev = a.get("device")
+        name = smap.get(sid, sid) or "?"
+        parts.append(f"{name} ({dev})" if dev else str(name))
+    return ", ".join(parts) or "-"
+
+
+def _render_volumes(conn, all_projects):
+    header("Volumes" + (" (all projects)" if all_projects else ""))
+    smap = {s.id: s.name for s in
+            safe_list(conn.compute.servers, details=True,
+                      all_projects=all_projects)}
+    volumes = safe_list(conn.block_storage.volumes, details=True,
+                        all_projects=all_projects)
+    volumes.sort(key=lambda v: (getattr(v, "name", "") or "").lower())
+    columns = ["name", "id", "size", "status", "type", "boot", "attached to"]
+    if all_projects:
+        columns.append("project")
+    rows = []
+    for v in volumes:
+        row = [getattr(v, "name", "") or "(unnamed)", v.id, f"{v.size} GB",
+               getattr(v, "status", "?"), getattr(v, "volume_type", "?"),
+               "yes" if getattr(v, "is_bootable", False) else "no",
+               _attachment_str(v, smap)]
+        if all_projects:
+            row.append(getattr(v, "project_id", None) or "-")
+        rows.append(row)
+    render_table("Volumes", columns, rows)

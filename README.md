@@ -89,6 +89,7 @@ A read-only view of the cloud — no prompts, no writes, nothing logged.
 ```bash
 python3 cld.py list                          # servers in the current project (default)
 python3 cld.py list servers --all-projects   # every project's servers (admin)
+python3 cld.py list volumes                  # Cinder volumes + the VM each is attached to
 python3 cld.py list flavors                  # vCPU / RAM / disk + in-use count
 python3 cld.py list capacity                 # Cinder pool capacity + volume quota
 python3 cld.py list clouds                   # configured clouds.yaml entries (no auth needed)
@@ -97,6 +98,7 @@ python3 cld.py list clouds                   # configured clouds.yaml entries (n
 | resource | shows |
 |----------|-------|
 | `servers` (default) | name, ID, status, flavor, IP, AZ (`+ project` with `--all-projects`) |
+| `volumes` | Cinder volumes: size, status, type, bootable, and the VM each is attached to |
 | `flavors` | vCPU / RAM / root disk + how many servers use each |
 | `images` | visibility, size, min-disk/ram, signed, in-use count |
 | `networks` | networks + subnets: CIDR, gateway, kind, port count |
@@ -107,7 +109,7 @@ python3 cld.py list clouds                   # configured clouds.yaml entries (n
 | flag | effect |
 |------|--------|
 | `--cloud NAME` | cloud (= project) from clouds.yaml (not needed for `clouds`) |
-| `--all-projects` | `servers`: include every project (admin); default is the current project |
+| `--all-projects` | `servers`/`volumes`: include every project (admin); default is the current project |
 
 ## Usage
 
