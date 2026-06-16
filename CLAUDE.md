@@ -83,7 +83,10 @@ vm.py         build_payload, _reserve_port, create_vm (NO volume), _offer_rollba
 storage.py    attach_storage(): create+attach a new volume, OR with --disk attach an
               EXISTING volume (_attach_existing: only if available/unattached/same-project,
               and NEVER modifies/deletes the pre-existing volume); _offer_volume_rollback
-              (deletes only volumes cld created, never the server) 
+              (deletes only volumes cld created, never the server). After a successful
+              attach, _print_mount_help prints the in-guest device + mount steps -- cld
+              does NOT mount (no SSH keys, no hypervisor/libvirt; the API can't mount a
+              guest FS), so don't add an auto-mount path without that access.
 init.py       credential bootstrap (connect_admin, ensure_admin_role, merge_clouds_entry)
 answers.py    save/load a createvm spec (YAML)
 audit.py      runtime logging wiring -> logs/cld-<date>.log; audit()/warn()

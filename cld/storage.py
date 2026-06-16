@@ -95,6 +95,44 @@ def _attached_servers(conn, volume):
     return ", ".join(names) or "(unknown)"
 
 
+def _attached_device(conn, server, volume):
+    """In-guest device path Nova assigned this volume on `server` (e.g. /dev/vdb),
+    or None if not reported yet."""
+    try:
+        v = conn.block_storage.get_volume(volume.id)
+    except Exception:  # noqa: BLE001
+        v = volume
+    for a in (getattr(v, "attachments", None) or []):
+        if a.get("server_id") == server.id and a.get("device"):
+            return a.get("device")
+    return None
+
+
+def _print_mount_help(conn, server, volume):
+    """Tell the operator how to mount the freshly-attached volume INSIDE the VM.
+
+    The cloud API only exposes the block device; partition/format/mount is
+    guest-side and cld has no in-guest access (no SSH keys, no hypervisor/libvirt).
+    So we print the device + safe, copy-pasteable steps instead of guessing.
+    """
+    dev = _attached_device(conn, server, volume) or "/dev/vdX  (run lsblk in the VM)"
+    mp = "/mnt/data"
+    out()
+    header("Mount it inside the VM")
+    out(f"Attached as [bold]{dev}[/bold] on {server.name} -- the cloud API can't "
+        "mount guest filesystems, so do this inside the VM (as root):")
+    out()
+    out(f"  [cyan]lsblk -f {dev}[/cyan]                 [dim]# check for an existing filesystem first[/dim]")
+    out(f"  [cyan]sudo mkfs.ext4 {dev}[/cyan]           [dim]# ONLY if blank -- this ERASES the disk[/dim]")
+    out(f"  [cyan]sudo mkdir -p {mp}[/cyan]")
+    out(f"  [cyan]sudo mount {dev} {mp}[/cyan]")
+    out(f"  [cyan]echo \"UUID=$(sudo blkid -s UUID -o value {dev}) {mp} ext4 "
+        f"defaults 0 2\" | sudo tee -a /etc/fstab[/cyan]")
+    out(f"  [cyan]sudo mount -a[/cyan]                  [dim]# verify the fstab entry[/dim]")
+    out()
+    warn("Only run mkfs if the disk is blank; it destroys existing data.")
+
+
 def _attach_existing(conn, server, volume_id, dry_run):
     """Attach a pre-existing volume to `server`, defensively.
 
@@ -177,6 +215,7 @@ def _attach_existing(conn, server, volume_id, dry_run):
     out()
     out(f"[bold green]Done.[/bold green] Volume {volume.id} attached to "
         f"{server.name}")
+    _print_mount_help(conn, server, volume)
     return volume
 
 
@@ -282,6 +321,7 @@ def _create_and_attach(conn, server, spec):
     out()
     out(f"[bold green]Done.[/bold green] Volume {volume.id} attached to "
         f"{server.name}")
+    _print_mount_help(conn, server, volume)
     return volume
 
 

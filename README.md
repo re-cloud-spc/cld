@@ -153,6 +153,12 @@ python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --disk dedf1d
 | `--type TYPE` | volume type, e.g. an encrypted/LUKS type (not allowed with `--disk`) |
 | `--dry-run` | show what would be created/attached, change nothing |
 
+Attaching only adds the **block device** (e.g. `/dev/vdb`) to the VM — it is **not
+mounted**. The cloud API can't mount a guest filesystem and `cld` has no in-guest
+access (no SSH keys, no hypervisor/libvirt), so after a successful attach it prints
+the device and the `lsblk`/`mkfs` (blank disks only)/`mount`/`fstab` steps to run
+inside the VM. See [docs/USAGE.md](docs/USAGE.md#mounting-the-attached-volume).
+
 ## What "inventory" means at each step
 
 - **Project** — fixed by the chosen credential; the tool re-confirms the scope.

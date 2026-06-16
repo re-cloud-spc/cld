@@ -165,6 +165,26 @@ allocated / over-subscription) and your project's volume quota vs usage, and
 validates the size against both. The disk model: a VM boots onto the flavor's small
 Ceph root disk; extra capacity comes from these attached Cinder (Ceph RBD) volumes.
 
+### Mounting the attached volume
+
+Attaching only adds the **block device** (e.g. `/dev/vdb`) to the VM — it is **not
+mounted**. The OpenStack API cannot mount a guest filesystem, and `cld` has no
+in-guest access (it holds no SSH private keys and no hypervisor/libvirt access), so
+after a successful attach it prints the device and the steps to run **inside the
+VM** (as root):
+
+```bash
+lsblk -f /dev/vdb                 # check for an existing filesystem first
+sudo mkfs.ext4 /dev/vdb           # ONLY if blank — this ERASES the disk
+sudo mkdir -p /mnt/data
+sudo mount /dev/vdb /mnt/data
+echo "UUID=$(sudo blkid -s UUID -o value /dev/vdb) /mnt/data ext4 defaults 0 2" | sudo tee -a /etc/fstab
+sudo mount -a                     # verify the fstab entry
+```
+
+> Only run `mkfs` if the disk is blank — a re-attached data volume already has a
+> filesystem and must **not** be reformatted.
+
 ## 6. What each createvm step shows you
 
 - **Cloud (project)** — the project is fixed by the chosen credential entry.
