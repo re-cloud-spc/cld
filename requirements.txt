@@ -1,0 +1,4 @@
+# cld dependencies (all already present on this host; pinned for portability)
+openstacksdk>=3.0.0
+rich>=13.0.0      # optional: nicer tables/colour; tool degrades to plain text without it
+PyYAML>=6.0       # reading clouds.yaml and saving/replaying answer files

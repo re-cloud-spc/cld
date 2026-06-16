@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+logs/
+.claude/
+clouds.yaml
+
+# saved-answers specs (cld createvm --save-answers)
+*.profile
