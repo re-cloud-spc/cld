@@ -84,6 +84,8 @@ resource is `servers`, scoped to the current project.
 python3 cld.py list                          # servers in the current project
 python3 cld.py list servers --all-projects   # every project's servers (admin)
 python3 cld.py list volumes                   # Cinder volumes + the VM each is attached to
+python3 cld.py list volumes --available=1     # only available (unattached, attachable) volumes
+python3 cld.py list volumes --available=0     # only the rest (in-use, error, creating, ...)
 python3 cld.py list flavors                  # vCPU / RAM / disk + in-use count
 python3 cld.py list images
 python3 cld.py list networks
@@ -107,6 +109,7 @@ python3 cld.py list clouds                    # clouds.yaml entries — no --clo
 |------|--------|
 | `--cloud NAME` | cloud (= project) from clouds.yaml (not needed for `clouds`) |
 | `--all-projects` | `servers`/`volumes`: include every project (admin); default is the current project |
+| `--available 0\|1` | `volumes` only: `1` = only volumes whose status is `available` (unattached, attachable); `0` = the exact complement (`in-use`, `error`, `creating`, …). Omit to show all — the two filters partition the full list. Errors on any other resource |
 
 ## 4. Create a VM (`cld createvm`)
 

@@ -85,6 +85,10 @@ def build_parser():
     p_list.add_argument("--all-projects", action="store_true",
                         help="servers/volumes: include every project (admin); "
                              "default is the current project")
+    p_list.add_argument("--available", type=int, choices=[0, 1], default=None,
+                        metavar="0|1",
+                        help="volumes: 1 = only available (unattached) volumes, "
+                             "0 = only unavailable ones; default is all")
 
     return ap
 
@@ -172,7 +176,11 @@ def cmd_check(args):
 
 
 def cmd_list(args):
-    return run_list(args.resource, args.cloud, args.all_projects)
+    if args.available is not None and args.resource != "volumes":
+        err("--available applies only to `list volumes`")
+        return 2
+    return run_list(args.resource, args.cloud, args.all_projects,
+                    available=args.available)
 
 
 def cmd_init(args):
