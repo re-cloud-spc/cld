@@ -15,7 +15,7 @@ RESOURCES = ["clouds", "servers", "volumes", "flavors", "images", "networks",
              "azs", "capacity"]
 
 
-def run_list(resource, cloud_arg, all_projects=False):
+def run_list(resource, cloud_arg, all_projects=False, available=None):
     # 'clouds' is a local read of clouds.yaml -- no connection / auth needed.
     if resource == "clouds":
         return _render_clouds()
@@ -28,7 +28,7 @@ def run_list(resource, cloud_arg, all_projects=False):
     if resource == "servers":
         _render_servers(conn, all_projects)
     elif resource == "volumes":
-        _render_volumes(conn, all_projects)
+        _render_volumes(conn, all_projects, available)
     elif resource == "flavors":
         render_flavors(conn, Inventory(conn))
     elif resource == "images":
@@ -100,14 +100,23 @@ def _attachment_str(volume, smap):
     return ", ".join(parts) or "-"
 
 
-def _render_volumes(conn, all_projects):
-    header("Volumes" + (" (all projects)" if all_projects else ""))
+def _render_volumes(conn, all_projects, available=None):
+    """`available`: None = every volume, 1 = status 'available' only, 0 = the
+    exact complement (in-use, error, creating, ...). 1 and 0 partition the list."""
+    scope = " (all projects)" if all_projects else ""
+    if available is not None:
+        scope += " — available only" if available else " — unavailable only"
+    header("Volumes" + scope)
     smap = {s.id: s.name for s in
             safe_list(conn.compute.servers, details=True,
                       all_projects=all_projects)}
     volumes = safe_list(conn.block_storage.volumes, details=True,
                         all_projects=all_projects)
     volumes.sort(key=lambda v: (getattr(v, "name", "") or "").lower())
+    if available is not None:
+        want = bool(available)
+        volumes = [v for v in volumes
+                   if (getattr(v, "status", None) == "available") == want]
     columns = ["name", "id", "size", "status", "type", "boot", "attached to",
                "created", "updated"]
     if all_projects:
