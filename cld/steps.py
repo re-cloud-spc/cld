@@ -302,9 +302,11 @@ def _rule_is_world_open(rule):
     return remote in ("0.0.0.0/0", "::/0")
 
 
-def security_review(conn):
+def security_review(conn, project_id=None):
     from cld.ui import confirm
     header("Security")
+    if project_id:
+        out(f"[dim]Options below are scoped to project {project_id}.[/dim]")
 
     # Keypair(s) - multiple may be selected; the VM authorizes all of them.
     keypairs = safe_list(conn.compute.keypairs)
@@ -324,8 +326,15 @@ def security_review(conn):
         warn("Multiple keys: the first is the Nova keypair; the rest are injected "
              "via cloud-init, so the image must support cloud-init.")
 
-    # Security groups
+    # Security groups. Unlike networks there is no shared/external escape hatch:
+    # an SG from another project is never usable here, and because the payload
+    # sends names (vm.build_payload) Nova would silently re-resolve it to this
+    # project's same-named group -- so the world-open warning below would
+    # describe a different SG than the one actually applied. Filter it out.
     sgs = safe_list(conn.network.security_groups)
+    if project_id:
+        sgs = [s for s in sgs
+               if getattr(s, "project_id", None) in (project_id, None)]
     rows = []
     for sg in sgs:
         open_rules = [r for r in (sg.security_group_rules or [])
@@ -352,6 +361,8 @@ def security_review(conn):
                     continue
             if sg.name not in chosen_sgs:
                 chosen_sgs.append(sg.name)
+            else:
+                out(f"[dim]'{sg.name}' already selected[/dim]")
             out(f"[dim]selected: {', '.join(chosen_sgs)}[/dim]")
     if not chosen_sgs:
         warn("No security group selected; the project 'default' SG will apply "

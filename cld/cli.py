@@ -116,7 +116,7 @@ def run_interactive(cloud):
     network = select_network(conn, project_id)
     if not network:
         sys.exit(1)
-    security = security_review(conn)
+    security = security_review(conn, project_id)
     name = prompt_str("VM name", default=None)
 
     spec = {

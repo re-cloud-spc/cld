@@ -81,7 +81,7 @@ def choose(prompt, items, label=lambda x: str(x), allow_none=False,
     out()
     base = 0
     if allow_none:
-        out(f"  [dim]0[/dim]) {none_label}")
+        out(f"  [dim]0[/dim]) {none_label}  [dim](or press Enter)[/dim]")
         base = 1
     for i, it in enumerate(items):
         mark = " [dim](default)[/dim]" if default_index == i else ""
@@ -90,6 +90,11 @@ def choose(prompt, items, label=lambda x: str(x), allow_none=False,
         raw = input(f"{prompt} > ").strip()
         if raw == "" and default_index is not None:
             return items[default_index]
+        # Enter picks the none-option when one is offered; without it (cloud,
+        # server, flavor, image, network) the choice is required and Enter is
+        # still rejected below.
+        if raw == "" and allow_none:
+            return None
         if not raw.isdigit():
             warn("enter a number")
             continue
