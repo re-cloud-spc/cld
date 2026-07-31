@@ -124,6 +124,19 @@ confirm a `logs/cld-*.log` line appears for each invocation.
 
 ## Architecture notes that span files
 
+- **Every wizard step must offer only options valid in the fixed project scope.**
+  The credential's project is chosen once (cloud = project) and cannot change, so a
+  step that lists another project's resources can only mislead. With the admin role,
+  `conn.network.*` reads return *all* projects — filter on `project_id` at the step.
+  `steps.render_networks` is the reference implementation, including the one
+  deliberate exception: a foreign network that is `shared` or `router_external` IS
+  usable, so it's kept. Security groups have **no** such exception (there is no
+  shared SG) and are filtered strictly to `(project_id, None)` in `security_review`
+  — required, not cosmetic, because `vm.build_payload` sends SG *names* and Nova
+  re-resolves them in the target project, so an unfiltered menu can warn about
+  world-open rules belonging to a different group than the one actually attached.
+  Flavors/images/keypairs/AZs are not project-partitioned here and need no filter.
+
 - **App-credential-per-project auth model.** Application credentials are permanently
   bound to one project and cannot be re-scoped. This is the central design constraint:
   each project becomes its own named `clouds.yaml` "cloud", the first step is "pick the
