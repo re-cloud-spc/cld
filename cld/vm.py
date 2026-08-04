@@ -10,7 +10,8 @@ from openstack import exceptions as os_exc
 
 from cld import audit
 from cld.steps import next_available_ip
-from cld.ui import out, header, warn, err, render_table, confirm
+from cld.ui import (out, header, warn, err, render_table, confirm,
+                    confirm_destructive)
 
 
 def key_names(security):
@@ -158,10 +159,11 @@ def _offer_rollback(conn, server, port=None):
     Reached only when server create/wait FAILED, so any `server` here is not a
     healthy ACTIVE VM. Pressing Enter keeps everything for inspection
     (default=False) -- the tool never deletes on an unattended keystroke
-    (rc3 issue #112).
+    (rc3 issue #112). Quitting here (q/Ctrl-D) also keeps them: confirm_destructive
+    maps an Abort to False rather than letting it unwind past the cleanup (#116).
     """
-    if not confirm("Roll back (delete the partially-created resources)?",
-                   default=False):
+    if not confirm_destructive("Roll back (delete the partially-created resources)?",
+                               default=False):
         warn("Leaving resources in place for inspection.")
         return
     # Delete the server first so it releases the port, then the port.
