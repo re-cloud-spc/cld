@@ -73,6 +73,44 @@ def render_table(title, columns, rows):
 # --------------------------------------------------------------------------- #
 # Input
 # --------------------------------------------------------------------------- #
+class Abort(Exception):
+    """The operator asked to quit at a prompt (q/quit/cancel, or Ctrl-D).
+
+    Raised out of the prompt helpers and caught once in cli.main(), so no caller
+    needs a "did they cancel?" branch and a half-built spec can never leak past a
+    cancelled prompt. Rollback prompts must map this to False, never to a delete
+    -- see confirm_destructive().
+    """
+
+
+_QUIT = ("q", "quit", "cancel")
+
+
+def _ask(prompt):
+    """input() with the two universal escapes wired in: Ctrl-D and q/quit/cancel.
+
+    Every numeric/menu prompt funnels through here so that no prompt can trap the
+    operator (rc3 #116). Free-text input uses _ask_text() instead, which does not
+    treat 'q' as a keyword.
+    """
+    try:
+        raw = input(prompt).strip()
+    except EOFError:            # Ctrl-D
+        raise Abort()
+    if raw.lower() in _QUIT:
+        raise Abort()
+    return raw
+
+
+def _ask_text(prompt):
+    """input() for free text: Ctrl-D aborts, but 'q' is a legitimate value
+    (a VM may legitimately be named 'q'), so no keyword matching here."""
+    try:
+        return input(prompt).strip()
+    except EOFError:            # Ctrl-D
+        raise Abort()
+
+
 def choose(prompt, items, label=lambda x: str(x), allow_none=False,
            none_label="(none / skip)", default_index=None):
     """Numbered single-select menu. Returns the chosen item (or None)."""
@@ -86,17 +124,23 @@ def choose(prompt, items, label=lambda x: str(x), allow_none=False,
     for i, it in enumerate(items):
         mark = " [dim](default)[/dim]" if default_index == i else ""
         out(f"  [cyan]{i + base}[/cyan]) {label(it)}{mark}")
+    lo = 0 if allow_none else base
+    hi = len(items) + base - 1
+    skip = (", Enter to skip" if allow_none
+            else (", Enter for the default" if default_index is not None else ""))
+    hint = f"enter a number {lo}-{hi}{skip}, or q to quit"
     while True:
-        raw = input(f"{prompt} > ").strip()
+        raw = _ask(f"{prompt} > ")
         if raw == "" and default_index is not None:
             return items[default_index]
         # Enter picks the none-option when one is offered; without it (cloud,
         # server, flavor, image, network) the choice is required and Enter is
-        # still rejected below.
+        # still rejected below -- silently defaulting a flavor or image would be
+        # a worse failure than re-prompting. `q` is always a way out.
         if raw == "" and allow_none:
             return None
         if not raw.isdigit():
-            warn("enter a number")
+            warn(hint)
             continue
         n = int(raw)
         if allow_none and n == 0:
@@ -104,7 +148,7 @@ def choose(prompt, items, label=lambda x: str(x), allow_none=False,
         idx = n - base
         if 0 <= idx < len(items):
             return items[idx]
-        warn("out of range")
+        warn(hint)
 
 
 def choose_multi(prompt, items, label=lambda x: str(x), none_label="(none)"):
@@ -118,16 +162,17 @@ def choose_multi(prompt, items, label=lambda x: str(x), none_label="(none)"):
     for i, it in enumerate(items):
         out(f"  [cyan]{i + 1}[/cyan]) {label(it)}")
     while True:
-        raw = input(f"{prompt} (comma-separated, e.g. 1,3) > ").strip()
+        raw = _ask(f"{prompt} (comma-separated, e.g. 1,3) > ")
         if raw == "" or raw == "0":
             return []
         tokens = [t for t in raw.replace(",", " ").split() if t]
         if not all(t.isdigit() for t in tokens):
-            warn("enter numbers separated by commas/spaces")
+            warn(f"enter numbers 1-{len(items)} separated by commas/spaces, "
+                 f"0 or Enter for none, or q to quit")
             continue
         nums = [int(t) for t in tokens]
         if any(n < 1 or n > len(items) for n in nums):
-            warn(f"out of range (1-{len(items)})")
+            warn(f"out of range (1-{len(items)}), or q to quit")
             continue
         chosen = []
         for n in nums:
@@ -140,11 +185,13 @@ def choose_multi(prompt, items, label=lambda x: str(x), none_label="(none)"):
 def prompt_int(prompt, minimum=None, maximum=None, default=None):
     while True:
         suffix = f" [default {default}]" if default is not None else ""
-        raw = input(f"{prompt}{suffix} > ").strip()
+        raw = _ask(f"{prompt}{suffix} > ")
         if raw == "" and default is not None:
             return default
         if not raw.lstrip("-").isdigit():
-            warn("enter an integer")
+            warn("enter an integer"
+                 + (", Enter for the default" if default is not None else "")
+                 + ", or q to quit")
             continue
         n = int(raw)
         if minimum is not None and n < minimum:
@@ -157,24 +204,41 @@ def prompt_int(prompt, minimum=None, maximum=None, default=None):
 
 
 def prompt_str(prompt, default=None, required=True):
+    """Free text. Deliberately does NOT treat 'q' as quit -- a VM may legitimately
+    be named 'q' -- so Ctrl-C / Ctrl-D are the escapes here, and the hint says so."""
     while True:
         suffix = f" [default {default}]" if default else ""
-        raw = input(f"{prompt}{suffix} > ").strip()
+        raw = _ask_text(f"{prompt}{suffix} > ")
         if raw == "" and default is not None:
             return default
         if raw == "" and not required:
             return None
         if raw:
             return raw
-        warn("value required")
+        warn("a value is required; Ctrl-C or Ctrl-D to quit")
 
 
 def confirm(prompt, default=False):
     d = "Y/n" if default else "y/N"
-    raw = input(f"{prompt} [{d}] > ").strip().lower()
+    raw = _ask(f"{prompt} [{d}] > ").lower()
     if raw == "":
         return default
     return raw in ("y", "yes")
+
+
+def confirm_destructive(prompt, default=False):
+    """confirm() for delete/rollback prompts: an Abort (q/quit/Ctrl-D) resolves to
+    False, never to a delete.
+
+    Quitting must decline the cleanup and leave the resource, matching the
+    default=False on every destructive path. No keystroke -- including a panic
+    Ctrl-D -- may ever destroy anything (rc3 #112).
+    """
+    try:
+        return confirm(prompt, default=default)
+    except Abort:
+        out("[dim]cancelled; leaving the resource in place[/dim]")
+        return False
 
 
 def gb(value):

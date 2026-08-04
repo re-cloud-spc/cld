@@ -9,7 +9,8 @@ from cld import audit
 from cld.cloud import connect, safe_list
 from cld.inventory import server_az
 from cld.steps import current_project
-from cld.ui import out, header, warn, err, render_table, choose, confirm
+from cld.ui import (out, header, warn, err, render_table, choose, confirm,
+                    confirm_destructive)
 from cld.volume import show_capacity, prompt_volume_spec
 
 
@@ -327,10 +328,12 @@ def _create_and_attach(conn, server, spec):
 
 def _offer_volume_rollback(conn, volume):
     """Offer to delete the dangling volume. Defaults to KEEPING it, and NEVER
-    touches the server (it pre-existed this command). Structural #112 guard."""
+    touches the server (it pre-existed this command). Structural #112 guard.
+    Quitting (q/Ctrl-D) keeps the volume too -- see confirm_destructive (#116)."""
     if volume is None:
         return
-    if not confirm("Delete the volume that failed to attach?", default=False):
+    if not confirm_destructive("Delete the volume that failed to attach?",
+                               default=False):
         warn("Leaving the volume in place for inspection.")
         return
     try:

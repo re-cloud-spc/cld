@@ -15,7 +15,7 @@ from cld.steps import (current_project, select_az, select_flavor, select_image,
                        select_network, security_review)
 from cld.storage import attach_storage
 from cld.listcmd import run_list, RESOURCES
-from cld.ui import out, warn, err, confirm, prompt_str
+from cld.ui import out, warn, err, confirm, prompt_str, Abort
 from cld.vm import build_payload, create_vm, print_summary
 from cld.answers import save_answers, load_answers
 
@@ -213,6 +213,13 @@ def main(argv=None):
         rc = handler(args)
     except KeyboardInterrupt:
         out("\nInterrupted; nothing created.")
+        return 130
+    except Abort:
+        # q/quit/cancel or Ctrl-D at any prompt. Every prompt runs before the
+        # create/attach calls, so this can only unwind a spec that was never
+        # submitted -- and rollback prompts use confirm_destructive(), which
+        # maps Abort to False rather than letting it reach here.
+        out("\nAborted; nothing created.")
         return 130
     return rc or 0
 
