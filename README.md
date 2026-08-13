@@ -204,6 +204,10 @@ in-guest access.
   choosing an external network warns and re-confirms.
 - Offers an **encrypted (LUKS) volume type** for the data volume when one exists.
 - Warns on **community** images.
+- Flags **flavors whose NUMA/hugepage extra specs cannot be satisfied** (e.g.
+  `hw:numa_nodes=3` on a 4 vCPU / 8192 MB flavor, which Nova rejects with a 400);
+  the flavor table marks them `!` and selecting one requires explicit
+  confirmation, so the failure surfaces before any port or server is created.
 - All inventory reads are **read-only**; the only writes are the explicit
   create/attach actions, each gated by a final confirmation and recorded to `logs/`.
 - **Rollback defaults to keeping resources.** On a failure mid-create, the rollback

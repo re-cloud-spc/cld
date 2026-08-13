@@ -116,6 +116,75 @@ def render_azs(conn, inv):
 # --------------------------------------------------------------------------- #
 # Flavor
 # --------------------------------------------------------------------------- #
+def flavor_topology(f):
+    """Inspect a flavor's NUMA/hugepage extra specs. -> (note, blocker).
+
+    `note` is a short string for the flavor table ("" when the flavor carries no
+    topology specs); `blocker` is a sentence when Nova is *guaranteed* to reject
+    the boot, else None.
+
+    Read-only and pure -- no API calls. The one hard failure detected here is the
+    one that bit m1.xl-App-Server: hw:numa_nodes=N with vCPU/RAM that do not
+    divide by N and no explicit per-node assignment, which Nova rejects with a
+    400 ("CPUs and/or memory cannot be evenly distributed across instance NUMA
+    nodes") at server-create time -- i.e. after cld has already reserved a port.
+    Catching it at selection time is the whole point.
+
+    hw:mem_page_size is a *soft* note only: whether hugepages are reserved on the
+    computes is not visible from this scope, so it is surfaced, not blocked.
+    """
+    specs = dict(getattr(f, "extra_specs", {}) or {})
+    if not specs:
+        return "", None
+
+    notes, blocker = [], None
+
+    nodes = specs.get("hw:numa_nodes")
+    if nodes is not None:
+        notes.append(f"numa={nodes}")
+        try:
+            n = int(nodes)
+        except (TypeError, ValueError):
+            n = None
+        # Explicit per-node assignment makes any split legal; Nova's error text
+        # names it as the fix, so honour it rather than blocking.
+        explicit = any(k.startswith(("hw:numa_cpus.", "hw:numa_mem."))
+                       for k in specs)
+        vcpus = getattr(f, "vcpus", 0) or 0
+        ram = getattr(f, "ram", 0) or 0
+        if n and n > 1 and not explicit and (vcpus % n or ram % n):
+            blocker = (f"hw:numa_nodes={n} but {vcpus} vCPU / {ram} MB do not "
+                       f"divide evenly across {n} nodes - Nova will reject the "
+                       f"boot with a 400. Needs explicit hw:numa_cpus.N / "
+                       f"hw:numa_mem.N, a different node count, or no NUMA spec.")
+
+    pages = specs.get("hw:mem_page_size")
+    if pages:
+        notes.append(f"pages={pages}")
+
+    # Malformed keys are deliberately *not* in the note: they are inert, and
+    # spelling them out here bloats the column and squeezes the whole table.
+    # flavor_warnings() reports them when a flavor is actually chosen.
+    return ", ".join(notes), blocker
+
+
+def flavor_warnings(f):
+    """User-facing warnings for a chosen flavor that are notes, not blockers."""
+    specs = dict(getattr(f, "extra_specs", {}) or {})
+    msgs = []
+    pages = specs.get("hw:mem_page_size")
+    if pages:
+        msgs.append(f"'{f.name}' requests hw:mem_page_size={pages}; the boot "
+                    f"lands on 'No valid host' unless hugepages are reserved on "
+                    f"a compute node.")
+    bad_keys = sorted(k for k in specs if k.startswith(":"))
+    if bad_keys:
+        msgs.append(f"'{f.name}' has malformed extra specs ({', '.join(bad_keys)}"
+                    f"): a leading ':' is not a valid namespace, so Nova ignores "
+                    f"them.")
+    return msgs
+
+
 def render_flavors(conn, inv):
     """Print the flavor table (read-only); return the sorted flavor list."""
     header("Flavor")
@@ -123,22 +192,52 @@ def render_flavors(conn, inv):
     flavors.sort(key=lambda f: (getattr(f, "vcpus", 0), getattr(f, "ram", 0)))
     counts = inv.count_by_flavor()
     rows = []
+    notes = []
+    flagged = False
     for f in flavors:
         used = counts.get(f.name, 0) + counts.get(f.id, 0)
+        note, blocker = flavor_topology(f)
+        if blocker:
+            flagged = True
+            note = f"[red]![/red] {note}" if note else "[red]![/red]"
+        notes.append(note)
         rows.append([f.name, f.vcpus, f"{gb(f.ram)} MB",
                      f"{f.disk} GB", getattr(f, "ephemeral", 0) or 0,
                      "yes" if getattr(f, "is_public", True) else "no", used])
+    columns = ["name", "vCPU", "RAM", "root disk", "ephem", "public", "in use"]
+    # Most clouds set no NUMA/hugepage specs at all; only pay the column width
+    # when there is something to say, so the common table stays as it was.
+    if any(notes):
+        columns.append("topology")
+        for row, note in zip(rows, notes):
+            row.append(note)
     render_table("Flavors (root 'disk' is the small Ceph-backed boot disk)",
-                 ["name", "vCPU", "RAM", "root disk", "ephem", "public",
-                  "in use"], rows)
+                 columns, rows)
+    if flagged:
+        warn("'!' marks a flavor whose NUMA/hugepage extra specs cannot be "
+             "satisfied as written; booting it fails at create time.")
     return flavors
 
 
 def select_flavor(conn, inv):
+    from cld.ui import confirm
     flavors = render_flavors(conn, inv)
-    return choose("Select flavor", flavors,
-                  label=lambda f: f"{f.name}  ({f.vcpus} vCPU / {gb(f.ram)}MB / "
-                                  f"{f.disk}GB)")
+    while True:
+        chosen = choose("Select flavor", flavors,
+                        label=lambda f: f"{f.name}  ({f.vcpus} vCPU / "
+                                        f"{gb(f.ram)}MB / {f.disk}GB)")
+        if not chosen:                 # nothing to choose from; caller errors out
+            return chosen
+        for msg in flavor_warnings(chosen):
+            warn(msg)
+        _, blocker = flavor_topology(chosen)
+        if blocker:
+            warn(blocker)
+            # Same shape as the world-open security-group prompt below: never
+            # default to the choice that is known to fail.
+            if not confirm("Use it anyway?", default=False):
+                continue
+        return chosen
 
 
 # --------------------------------------------------------------------------- #
