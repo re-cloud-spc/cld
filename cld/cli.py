@@ -12,7 +12,8 @@ from cld import audit
 from cld.cloud import connect, select_cloud, run_check
 from cld.inventory import Inventory
 from cld.steps import (current_project, select_az, select_flavor, select_image,
-                       select_network, security_review)
+                       select_network, security_review, flavor_topology,
+                       flavor_warnings)
 from cld.storage import attach_storage
 from cld.listcmd import run_list, RESOURCES
 from cld.ui import out, warn, err, confirm, prompt_str, Abort
@@ -133,6 +134,30 @@ def run_interactive(cloud):
     return conn, spec
 
 
+def _check_saved_flavor(conn, spec, dry_run):
+    """Warn about a saved spec's flavor topology. -> True to keep going.
+
+    Read-only: resolves the flavor id from the spec and reuses the wizard's
+    checker. A dry run only reports; a real run needs an explicit yes.
+    """
+    flavor_id = spec.get("flavor_id")
+    if not flavor_id:
+        return True
+    try:
+        flavor = conn.compute.get_flavor(flavor_id)
+    except Exception:  # noqa: BLE001 - missing/unreadable flavor surfaces later
+        return True
+    for msg in flavor_warnings(flavor):
+        warn(msg)
+    _, blocker = flavor_topology(flavor)
+    if not blocker:
+        return True
+    warn(f"saved flavor '{getattr(flavor, 'name', flavor_id)}': {blocker}")
+    if dry_run:
+        return True
+    return confirm("Proceed anyway?", default=False)
+
+
 def cmd_createvm(args):
     cloud = select_cloud(args.cloud)
     audit.audit("createvm.start", cloud=cloud, dry_run=args.dry_run)
@@ -140,6 +165,12 @@ def cmd_createvm(args):
         spec = load_answers(args.non_interactive)
         spec.setdefault("cloud", cloud)
         conn = connect(cloud)
+        # This path skips select_flavor, so a saved spec pinned to a flavor with
+        # unsatisfiable NUMA specs would hit the same create-time 400. Same
+        # check, same default-to-No gate.
+        if not _check_saved_flavor(conn, spec, args.dry_run):
+            out("Aborted; nothing created.")
+            return 0
     else:
         conn, spec = run_interactive(cloud)
 

@@ -218,6 +218,12 @@ sudo mount -a                     # verify the fstab entry
   choosing an external network warns and re-confirms.
 - Offers an **encrypted (LUKS) volume type** for the data volume when available.
 - Warns on **community** images.
+- Flags **flavors whose NUMA/hugepage extra specs cannot be satisfied** — the
+  `topology` column marks them `!` (e.g. `hw:numa_nodes=3` on a 4 vCPU / 8192 MB
+  flavor, which Nova rejects with *"Instance CPUs and/or memory cannot be evenly
+  distributed across instance NUMA nodes"*). Selecting one requires explicit
+  confirmation, so it fails before a port or server is created; `hw:mem_page_size`
+  is surfaced as a warning since it needs hugepages reserved on the compute.
 - All inventory reads are **read-only**; the only writes are the explicit
   create/attach actions, each gated by a final confirmation.
 - **Rollback defaults to keeping resources** — on a mid-create failure the rollback
