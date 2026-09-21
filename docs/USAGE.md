@@ -170,23 +170,43 @@ Ceph root disk; extra capacity comes from these attached Cinder (Ceph RBD) volum
 
 ### Mounting the attached volume
 
-Attaching only adds the **block device** (e.g. `/dev/vdb`) to the VM — it is **not
-mounted**. The OpenStack API cannot mount a guest filesystem, and `cld` has no
-in-guest access (it holds no SSH private keys and no hypervisor/libvirt access), so
-after a successful attach it prints the device and the steps to run **inside the
-VM** (as root):
+Attaching only adds a **block device** to the VM — it is **not mounted**. The
+OpenStack API cannot mount a guest filesystem, and `cld` has no in-guest access (it
+holds no SSH private keys and no hypervisor/libvirt access), so after a successful
+attach it prints the device and the steps to run **inside the VM** (as root).
+
+The device is printed as its **exact, stable path**
+`/dev/disk/by-id/virtio-<first 20 chars of the volume ID>`. Nova sets the virtio disk
+serial to the Cinder volume ID, so this path always names *this* volume. The
+`/dev/vdX` that Nova reports is only the name it requested: the guest kernel names disks
+in discovery order, so it can differ and can change across reboots. `cld` still shows it
+as a hint. For volume `3f31a7d0-0e05-4e83-b42b-edf0aa8f9d7a`:
 
 ```bash
-lsblk -f /dev/vdb                 # check for an existing filesystem first
-sudo mkfs.ext4 /dev/vdb           # ONLY if blank — this ERASES the disk
+lsblk -f /dev/disk/by-id/virtio-3f31a7d0-0e05-4e83-b        # existing partitions/filesystem?
+sudo wipefs -n /dev/disk/by-id/virtio-3f31a7d0-0e05-4e83-b  # no output = blank
+sudo mkfs.ext4 -L data-3f31a7d0 /dev/disk/by-id/virtio-3f31a7d0-0e05-4e83-b   # ONLY if blank — ERASES the disk
 sudo mkdir -p /mnt/data
-sudo mount /dev/vdb /mnt/data
-echo "UUID=$(sudo blkid -s UUID -o value /dev/vdb) /mnt/data ext4 defaults 0 2" | sudo tee -a /etc/fstab
-sudo mount -a                     # verify the fstab entry
+sudo mount /dev/disk/by-id/virtio-3f31a7d0-0e05-4e83-b /mnt/data
+echo "/dev/disk/by-id/virtio-3f31a7d0-0e05-4e83-b /mnt/data ext4 defaults,nofail,x-systemd.device-timeout=10s 0 2" | sudo tee -a /etc/fstab
+sudo findmnt --verify                                       # check the fstab entry
 ```
+
+The fstab entry uses the by-id path rather than `UUID=`, because volumes cloned from
+the same image share filesystem UUIDs. `nofail` keeps a later detach from blocking boot.
 
 > Only run `mkfs` if the disk is blank — a re-attached data volume already has a
 > filesystem and must **not** be reformatted.
+
+**Image/root volumes can hijack the boot.** A bootable or image-derived volume (an
+old VM's root disk) carries the cloud image's filesystem labels `cloudimg-rootfs` /
+`UEFI` / `BOOT`. Ubuntu cloud guests boot and mount by exactly those labels
+(`root=LABEL=cloudimg-rootfs`, fstab `LABEL=UEFI` / `LABEL=BOOT`), and udev points
+`/dev/disk/by-label/*` at whichever disk it saw last. So after attaching one, the VM's
+**next reboot can come up on the attached disk's root filesystem**. `cld` can't read
+guest labels, so it warns on every image volume: before the attach, and again in the
+mount help. Don't reboot until `ls -l /dev/disk/by-label/` points only at the VM's own
+disk. Get there by reformatting the volume (if its data is disposable) or by detaching it.
 
 ## 5b. Delete an unattached volume (`cld deletevolume`)
 

@@ -157,11 +157,13 @@ python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --disk dedf1d
 | `--type TYPE` | volume type, e.g. an encrypted/LUKS type (not allowed with `--disk`) |
 | `--dry-run` | show what would be created/attached, change nothing |
 
-Attaching only adds the **block device** (e.g. `/dev/vdb`) to the VM — it is **not
-mounted**. The cloud API can't mount a guest filesystem and `cld` has no in-guest
-access (no SSH keys, no hypervisor/libvirt), so after a successful attach it prints
-the device and the `lsblk`/`mkfs` (blank disks only)/`mount`/`fstab` steps to run
-inside the VM. See [docs/USAGE.md](docs/USAGE.md#mounting-the-attached-volume).
+Attaching only adds a **block device** to the VM — it is **not mounted**. The cloud
+API can't mount a guest filesystem and `cld` has no in-guest access (no SSH keys, no
+hypervisor/libvirt), so after a successful attach it prints the device's exact path
+(`/dev/disk/by-id/virtio-<volume-id[:20]>`; Nova's `/dev/vdX` can differ in the guest)
+and the `lsblk`/`mkfs` (blank disks only)/`mount`/`fstab` steps to run inside the VM.
+Attaching a bootable/image volume triggers a warning: its cloud-image labels can make
+the VM boot from it after a reboot. See [docs/USAGE.md](docs/USAGE.md#mounting-the-attached-volume).
 
 ## Delete an unattached volume (`cld deletevolume`)
 

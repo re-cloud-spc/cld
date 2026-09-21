@@ -5,6 +5,8 @@ this command operates on a pre-existing server, so its rollback can only ever
 delete the dangling volume -- it never touches the server.
 """
 
+import time
+
 from cld import audit
 from cld.cloud import connect, safe_list
 from cld.inventory import server_az
@@ -96,17 +98,39 @@ def _attached_servers(conn, volume):
     return ", ".join(names) or "(unknown)"
 
 
-def _attached_device(conn, server, volume):
-    """In-guest device path Nova assigned this volume on `server` (e.g. /dev/vdb),
-    or None if not reported yet."""
-    try:
-        v = conn.block_storage.get_volume(volume.id)
-    except Exception:  # noqa: BLE001
-        v = volume
-    for a in (getattr(v, "attachments", None) or []):
-        if a.get("server_id") == server.id and a.get("device"):
-            return a.get("device")
-    return None
+def _guest_device(volume):
+    """The exact in-guest path of this volume, independent of attach order.
+
+    Nova's libvirt driver sets the virtio disk serial to the Cinder volume ID, and
+    virtio-blk truncates serials to 20 chars, so udev links the disk as
+    /dev/disk/by-id/virtio-<first 20 chars of the volume ID>. Nova's reported
+    /dev/vdX is only the name it *requested*; the guest kernel names disks in
+    discovery order and can disagree (and the name can change across reboots).
+    """
+    return f"/dev/disk/by-id/virtio-{volume.id[:20]}"
+
+
+def _attached_device(conn, server, volume, wait=30):
+    """Device name Nova reports for this volume on `server` (e.g. /dev/vdb), or
+    None. The attach call returns before Cinder records the attachment, so poll
+    (read-only) for up to `wait` seconds instead of reading it once, too early."""
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            v = conn.block_storage.get_volume(volume.id)
+        except Exception:  # noqa: BLE001
+            v = volume
+        for a in (getattr(v, "attachments", None) or []):
+            if a.get("server_id") == server.id and a.get("device"):
+                return a.get("device")
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(2)
+
+
+def _is_image_volume(volume):
+    return bool(getattr(volume, "is_bootable", False)
+                or getattr(volume, "volume_image_metadata", None))
 
 
 def _print_mount_help(conn, server, volume):
@@ -114,24 +138,56 @@ def _print_mount_help(conn, server, volume):
 
     The cloud API only exposes the block device; partition/format/mount is
     guest-side and cld has no in-guest access (no SSH keys, no hypervisor/libvirt).
-    So we print the device + safe, copy-pasteable steps instead of guessing.
+    So we print the exact device + safe, copy-pasteable steps instead of guessing.
+    Every command uses the by-id path: it names THIS volume, where a /dev/vdX
+    guess could name another disk -- and mkfs on the wrong one is unrecoverable.
     """
-    dev = _attached_device(conn, server, volume) or "/dev/vdX  (run lsblk in the VM)"
+    dev = _guest_device(volume)
+    nova_dev = _attached_device(conn, server, volume)
     mp = "/mnt/data"
     out()
     header("Mount it inside the VM")
-    out(f"Attached as [bold]{dev}[/bold] on {server.name} -- the cloud API can't "
-        "mount guest filesystems, so do this inside the VM (as root):")
+    out(f"Attached to {server.name} as [bold]{dev}[/bold]")
+    out(f"[dim](Nova reports {nova_dev or 'no device name yet'}; the guest's /dev/vdX "
+        f"can differ, so use the by-id path -- it is always this volume. If it is "
+        f"missing, find it with: ls -l /dev/disk/by-id/ | grep {volume.id[:20]})[/dim]")
+    out("The cloud API can't mount guest filesystems, so do this inside the VM (as root):")
     out()
-    out(f"  [cyan]lsblk -f {dev}[/cyan]                 [dim]# check for an existing filesystem first[/dim]")
-    out(f"  [cyan]sudo mkfs.ext4 {dev}[/cyan]           [dim]# ONLY if blank -- this ERASES the disk[/dim]")
-    out(f"  [cyan]sudo mkdir -p {mp}[/cyan]")
-    out(f"  [cyan]sudo mount {dev} {mp}[/cyan]")
-    out(f"  [cyan]echo \"UUID=$(sudo blkid -s UUID -o value {dev}) {mp} ext4 "
-        f"defaults 0 2\" | sudo tee -a /etc/fstab[/cyan]")
-    out(f"  [cyan]sudo mount -a[/cyan]                  [dim]# verify the fstab entry[/dim]")
+    out("  [dim]# 1. existing partitions/filesystem? (wipefs: no output = blank)[/dim]")
+    out(f"  [cyan]lsblk -f {dev}[/cyan]", wrap=False)
+    out(f"  [cyan]sudo wipefs -n {dev}[/cyan]", wrap=False)
+    out("  [dim]# 2. ONLY if blank -- mkfs ERASES the disk[/dim]")
+    out(f"  [cyan]sudo mkfs.ext4 -L data-{volume.id[:8]} {dev}[/cyan]", wrap=False)
+    out("  [dim]# 3. mount, persist, verify[/dim]")
+    out(f"  [cyan]sudo mkdir -p {mp}[/cyan]", wrap=False)
+    out(f"  [cyan]sudo mount {dev} {mp}[/cyan]", wrap=False)
+    out(f"  [cyan]echo \"{dev} {mp} ext4 defaults,nofail,x-systemd.device-timeout=10s "
+        f"0 2\" | sudo tee -a /etc/fstab[/cyan]", wrap=False)
+    out("  [cyan]sudo findmnt --verify[/cyan]", wrap=False)
     out()
+    out("[dim]fstab uses the by-id path, not UUID= (cloned image volumes share "
+        "filesystem UUIDs); nofail keeps a later detach from blocking boot.[/dim]")
     warn("Only run mkfs if the disk is blank; it destroys existing data.")
+    if _is_image_volume(volume):
+        _warn_boot_label_clash(server)
+
+
+def _warn_boot_label_clash(server):
+    """An image/root volume carries the cloud image's filesystem labels
+    (cloudimg-rootfs, UEFI, BOOT) -- the very labels Ubuntu cloud guests boot and
+    mount by (root=LABEL=cloudimg-rootfs, fstab LABEL=UEFI/BOOT). udev points
+    /dev/disk/by-label/* at the disk it saw LAST, so after this attach the VM's
+    next reboot can mount THIS volume as / or /boot. cld cannot read guest labels,
+    so it warns on every image volume; seen live on rc3 Mailcow1, 2026-09-21."""
+    out()
+    warn(f"this is an image/root volume: it very likely carries the labels "
+         f"'cloudimg-rootfs' / 'UEFI' / 'BOOT' that {server.name} itself boots by. "
+         f"Do NOT reboot {server.name} until that is resolved -- it may come up on "
+         f"THIS disk's root filesystem.")
+    out("  Check inside the VM:  [cyan]ls -l /dev/disk/by-label/[/cyan]  "
+        "[dim]# those links must point at the VM's own disk[/dim]")
+    out("  Resolve by reformatting this volume (if its data is disposable) or "
+        "detaching it.")
 
 
 def _attach_existing(conn, server, volume_id, dry_run):
@@ -168,7 +224,8 @@ def _attach_existing(conn, server, volume_id, dry_run):
     # --- non-blocking warnings ---
     if getattr(volume, "is_bootable", False):
         warn("this volume is bootable -- it may be a root/image volume rather "
-             "than a spare data disk.")
+             "than a spare data disk. Its cloud-image filesystem labels can make "
+             f"{server.name} boot from it after a reboot (details after attach).")
     vaz = getattr(volume, "availability_zone", None)
     saz = server_az(server)
     if vaz and saz and vaz != saz:

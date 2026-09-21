@@ -94,7 +94,11 @@ storage.py    attach_storage(): create+attach a new volume, OR with --disk attac
               EXISTING volume (_attach_existing: only if available/unattached/same-project,
               and NEVER modifies/deletes the pre-existing volume); _offer_volume_rollback
               (deletes only volumes cld created, never the server). After a successful
-              attach, _print_mount_help prints the in-guest device + mount steps -- cld
+              attach, _print_mount_help prints the in-guest device as its exact
+              /dev/disk/by-id/virtio-<vol-id[:20]> path (NOT Nova's /dev/vdX, which the
+              guest may name differently) + mount steps, and for an image/root volume
+              warns that its cloudimg-rootfs/UEFI/BOOT labels can hijack the VM's next
+              boot (_warn_boot_label_clash). cld
               does NOT mount (no SSH keys, no hypervisor/libvirt; the API can't mount a
               guest FS), so don't add an auto-mount path without that access.
 deletevol.py  delete_volume(): the only delete of a pre-existing resource. Hard refusals
