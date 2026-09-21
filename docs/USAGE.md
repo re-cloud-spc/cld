@@ -208,6 +208,46 @@ guest labels, so it warns on every image volume: before the attach, and again in
 mount help. Don't reboot until `ls -l /dev/disk/by-label/` points only at the VM's own
 disk. Get there by reformatting the volume (if its data is disposable) or by detaching it.
 
+## 5b. Delete an unattached volume (`cld deletevolume`)
+
+```bash
+python3 cld.py deletevolume --cloud admin --volumeid bd5407da-dd18-48dc-80e7-45e189e724c3 --dry-run   # report only
+python3 cld.py deletevolume --cloud admin --volumeid bd5407da-dd18-48dc-80e7-45e189e724c3             # report, then decide
+```
+
+`deletevolume` permanently deletes **one** volume, and only after showing you what
+you're about to lose. Pass the full UUID; names aren't unique, so `cld` won't guess.
+
+**It refuses, with no override, when:**
+- the volume is **attached**: it has Cinder attachments, a Nova server still lists
+  it, or a client holds its Ceph image open (an RBD watcher). `cld` prints the
+  detach procedure to follow first: stop use and `umount` inside the VM, remove its
+  `/etc/fstab` line, `openstack server remove volume <server> <volume>`, then re-run.
+  `cld` never detaches anything itself.
+- the status is anything other than `available` or `error`. `reserved` (a stale
+  attach reservation), `attaching`, `detaching` and `error_deleting` each get a hint
+  on what a human must check.
+- the volume belongs to another project than the credential's.
+- the volume has **Cinder snapshots**. `cld` never cascades.
+
+**Otherwise it reports:**
+- **Cinder facts:** size, type, bootable, source (image, snapshot or volume), age,
+  last record change, metadata, snapshots, backups, and clones made from it.
+- **Contents**, read-only from the Ceph image: bytes ever written ("never written"
+  means it's empty); the partition table; each filesystem's type, label and used
+  space; and for ext4, when and where it was last mounted and its lifetime writes.
+  It never mounts or maps anything. It needs the Ceph admin keyring, used directly
+  as root or via `sudo -n`; without that access it says so, and you decide on
+  metadata alone.
+- **History:** the RBD created, modified and accessed timestamps, plus every `cld`
+  audit-log line that mentions the volume.
+
+**Then you decide.** Answer `y` (the default is No; Enter, `q` or Ctrl-D keep the
+volume), then type the first 8 characters of the volume ID. `cld` re-reads the volume
+and refuses if anything changed while you were deciding. It then deletes without
+force, writes a `volume.delete` audit line, and polls Cinder until the volume is
+confirmed gone (or reports `error_deleting`). Any backups remain.
+
 ## 6. What each createvm step shows you
 
 - **Cloud (project)** — the project is fixed by the chosen credential entry.
@@ -245,7 +285,9 @@ disk. Get there by reformatting the volume (if its data is disposable) or by det
   confirmation, so it fails before a port or server is created; `hw:mem_page_size`
   is surfaced as a warning since it needs hugepages reserved on the compute.
 - All inventory reads are **read-only**; the only writes are the explicit
-  create/attach actions, each gated by a final confirmation.
+  create/attach/delete actions, each gated by a final confirmation.
+- `deletevolume` refuses attached, transitional, cross-project and snapshotted
+  volumes. A delete needs a `y` (default No) plus the typed ID prefix.
 - **Rollback defaults to keeping resources** — on a mid-create failure the rollback
   prompt defaults to *No*, so Enter leaves everything for inspection.
   `attachstorage` rollback only ever deletes the dangling volume, never the server.
