@@ -20,9 +20,10 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 # Output
 # --------------------------------------------------------------------------- #
-def out(msg=""):
+def out(msg="", wrap=True):
+    """wrap=False: never hard-wrap (for copy-pasteable commands)."""
     if _RICH:
-        _console.print(msg)
+        _console.print(msg, soft_wrap=not wrap)
     else:
         # Strip the most common rich markup so plain mode stays readable.
         for tag in ("[bold]", "[/bold]", "[red]", "[/red]", "[green]",
