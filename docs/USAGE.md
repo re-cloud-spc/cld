@@ -158,7 +158,7 @@ python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --size 50 --d
 |------|--------|
 | `--cloud NAME` | cloud (= project) the server lives in |
 | `--serverid ID` | target server ID (otherwise lists the project's servers to pick) |
-| `--disk VOLUME_ID` | attach an existing volume by ID instead of creating one; attaches only if it's `available` and unattached, and never alters the volume on failure |
+| `--disk VOLUME_ID` | attach an existing volume by ID instead of creating one; attaches only if it's `available`, unattached and in this project, and never alters the volume on failure; a bootable volume needs an extra yes and triggers the boot-label warning |
 | `--size GB` | volume size for a new volume (not allowed with `--disk`) |
 | `--type TYPE` | volume type, e.g. an encrypted/LUKS type (not allowed with `--disk`) |
 | `--dry-run` | show what would be created/attached, change nothing |
@@ -214,6 +214,12 @@ disk. Get there by reformatting the volume (if its data is disposable) or by det
 python3 cld.py deletevolume --cloud admin --volumeid bd5407da-dd18-48dc-80e7-45e189e724c3 --dry-run   # report only
 python3 cld.py deletevolume --cloud admin --volumeid bd5407da-dd18-48dc-80e7-45e189e724c3             # report, then decide
 ```
+
+| flag | effect |
+|------|--------|
+| `--cloud NAME` | cloud (= project) the volume lives in; only volumes of that project can be deleted |
+| `--volumeid UUID` | **required**. Full UUID of the ONE volume to delete (names are not unique, so they're refused). Refused if attached, in any status other than `available`/`error`, in another project, or if it has snapshots |
+| `--dry-run` | show the full report (facts, contents, age, history) and stop; delete nothing |
 
 `deletevolume` permanently deletes **one** volume, and only after showing you what
 you're about to lose. Pass the full UUID; names aren't unique, so `cld` won't guess.

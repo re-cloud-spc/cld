@@ -24,6 +24,56 @@ from cld.answers import save_answers, load_answers
 SUBCOMMANDS = {"init", "createvm", "attachstorage", "deletevolume", "check", "list"}
 
 
+_ATTACH_EPILOG = """\
+after a successful attach:
+  cld prints the in-guest steps to format/mount the disk. It names the disk by
+  its exact path, /dev/disk/by-id/virtio-<first 20 chars of the volume ID>;
+  Nova's /dev/vdX is only a hint (the guest may name it differently).
+  cld never mounts anything itself.
+
+bootable / image volumes (an old VM's root disk):
+  they carry the labels cloudimg-rootfs / UEFI / BOOT that the VM itself boots
+  by, so its next reboot may come up on the ATTACHED disk. cld warns before
+  and after the attach: do not reboot until `ls -l /dev/disk/by-label/` inside
+  the VM points only at its own disk (reformat or detach the volume).
+
+examples:
+  cld attachstorage --cloud admin --serverid <server-id> --size 50 --dry-run
+  cld attachstorage --cloud admin --serverid <server-id> --disk <volume-id>
+"""
+
+_DELETE_EPILOG = """\
+refused, with no override, when the volume:
+  - is attached: Cinder attachment, a Nova server still listing it, or its
+    Ceph image held open by a client. Detach it first: stop use + umount
+    inside the VM, remove its /etc/fstab line, then
+    `openstack server remove volume <server> <volume>`, then re-run.
+    cld never detaches anything itself.
+  - has a status other than available / error (reserved, attaching,
+    detaching, error_deleting, ... each get a hint)
+  - belongs to another project than this cloud's credential
+  - has Cinder snapshots (cld never cascades)
+
+report shown before you decide:
+  Cinder facts (size, type, source image/snapshot/volume, age, snapshots,
+  backups, clones), the contents read-only from Ceph (bytes ever written,
+  partitions, filesystems + used space, ext4 last mount time/path) and the
+  history (RBD timestamps, every cld audit-log line for the volume).
+  Reading contents needs the Ceph keyring (root, or `sudo -n`); without it
+  the report says so and you decide on metadata alone.
+
+deciding:
+  answer y (default No; Enter, q or Ctrl-D keep the volume), then type the
+  first 8 characters of the volume ID. cld re-reads the volume, refuses if it
+  changed meanwhile, deletes without force, logs it, and verifies it is gone.
+  Backups of the volume are separate and remain.
+
+examples:
+  cld deletevolume --cloud admin --volumeid <uuid> --dry-run   # report only
+  cld deletevolume --cloud admin --volumeid <uuid>
+"""
+
+
 def build_parser():
     ap = argparse.ArgumentParser(
         prog="cld",
@@ -56,14 +106,20 @@ def build_parser():
 
     p_attach = sub.add_parser(
         "attachstorage", help="create + attach a data volume to an existing server",
+        description="Create a new Cinder volume (or, with --disk, take an existing\n"
+                    "one) and attach it to an EXISTING server. Never creates or\n"
+                    "touches the server itself; a failed attach can only roll back\n"
+                    "the volume, and that rollback defaults to No.",
+        epilog=_ATTACH_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False)
     p_attach.add_argument("--cloud", help="cloud name from clouds.yaml")
     p_attach.add_argument("--serverid", help="target server ID "
                           "(otherwise you're prompted)")
     p_attach.add_argument("--disk", metavar="VOLUME_ID",
                           help="attach an existing volume by ID instead of "
-                               "creating one; attaches only if it's available "
-                               "and unattached")
+                               "creating one; attaches only if it's available, "
+                               "unattached and in this project (a bootable one "
+                               "needs an extra yes)")
     p_attach.add_argument("--size", type=int, help="volume size in GB "
                           "(not allowed with --disk)")
     p_attach.add_argument("--type", dest="type_name", help="volume type "
@@ -73,7 +129,12 @@ def build_parser():
 
     p_del = sub.add_parser(
         "deletevolume", help="permanently delete ONE unattached volume, after "
-        "showing its contents/age/history", allow_abbrev=False)
+        "showing its contents/age/history",
+        description="Permanently delete ONE unattached Cinder volume -- but first\n"
+                    "show what it holds, how old it is and its history, and let\n"
+                    "you decide. Nothing is deleted without two confirmations.",
+        epilog=_DELETE_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False)
     p_del.add_argument("--cloud", help="cloud name from clouds.yaml")
     p_del.add_argument("--volumeid", required=True, metavar="VOLUME_ID",
                        help="full UUID of the volume to delete; refused if it is "
