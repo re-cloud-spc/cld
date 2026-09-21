@@ -13,11 +13,12 @@ cloud and this directory is **not a git repo**, so there is no undo.
 Treat every write as irreversible and high-blast-radius. Specifically:
 
 - **Never run a write subcommand on your own initiative.** `cld createvm` (real
-  create), `cld attachstorage` (create+attach a volume), and `cld init` (mint a
-  credential / grant a role) are human-initiated only, and only when explicitly
+  create), `cld attachstorage` (create+attach a volume), `cld deletevolume`
+  (permanently delete a volume), and `cld init` (mint a credential / grant a role)
+  are human-initiated only, and only when explicitly
   asked. To demonstrate or test, use the **read-only** paths: `python3 cld.py check
-  --cloud <name>` and `--dry-run` on `createvm`/`attachstorage` (walks every step,
-  prints the payload/plan, creates nothing).
+  --cloud <name>` and `--dry-run` on `createvm`/`attachstorage`/`deletevolume` (walks
+  every step, prints the payload/plan/report, changes nothing).
 - **Preserve the existing safety rails when editing code.** The tool's value is its
   defensiveness; do not weaken it. In particular keep: every destructive/exposing
   action gated behind an explicit `confirm(..., default=False)`; world-open
@@ -63,6 +64,10 @@ suite — a Python 3 package run directly. Subcommands:
   land in `0`, which is intentional — they're the ones worth surfacing). It's the only
   non-`store_true` switch in the CLI because it needs three states (1 / 0 / omitted);
   passing it with any other resource is a hard error, not a silent no-op.
+- `cld deletevolume --volumeid <uuid>` — permanently delete ONE unattached volume,
+  after a report of its Cinder facts, on-disk contents (read-only Ceph peek), age and
+  cld audit history. Refuses attached/transitional/cross-project/snapshotted volumes
+  and tells the operator to detach first; it never detaches.
 - `cld check` — authenticate, print the scoped project/user, exit (env-immune).
 
 Entry points: `python3 cld.py <sub>` or `python3 -m cld <sub>`; a bare invocation or
@@ -92,6 +97,13 @@ storage.py    attach_storage(): create+attach a new volume, OR with --disk attac
               attach, _print_mount_help prints the in-guest device + mount steps -- cld
               does NOT mount (no SSH keys, no hypervisor/libvirt; the API can't mount a
               guest FS), so don't add an auto-mount path without that access.
+deletevol.py  delete_volume(): the only delete of a pre-existing resource. Hard refusals
+              (attached incl. Nova record + RBD watcher, non-final status, other project,
+              snapshots -- never cascade), a report, confirm_destructive + typed ID prefix,
+              re-read before the call, force=False, audit, verify gone. Never detaches.
+rbdpeek.py    READ-ONLY look at a volume's Ceph image (librbd read_only, atime updates
+              disabled for this client): allocated bytes, partitions, fs superblocks.
+              Self-contained: re-runs itself via `sudo -n` when the keyring is root-only.
 init.py       credential bootstrap (connect_admin, ensure_admin_role, merge_clouds_entry)
 answers.py    save/load a createvm spec (YAML)
 audit.py      runtime logging wiring -> logs/cld-<date>.log; audit()/warn()
@@ -110,11 +122,13 @@ python3 cld.py check --cloud <name>                 # auth smoke test, prints sc
 python3 cld.py list [resource] [--cloud <name>] [--all-projects] [--available 0|1]  # inventory, no writes, unlogged
 python3 cld.py createvm --cloud <name> --dry-run    # full wizard, prints payload, creates nothing
 python3 cld.py attachstorage --cloud <name> --server <s> --dry-run   # plan only
+python3 cld.py deletevolume --cloud <name> --volumeid <uuid> --dry-run  # report only
 
 # Writes to the cluster — human-initiated only:
 python3 cld.py createvm --cloud <name> [--save-answers f.yaml]
 python3 cld.py createvm --non-interactive f.yaml
 python3 cld.py attachstorage --cloud <name> --server <s> [--size GB] [--type T]
+python3 cld.py deletevolume --cloud <name> --volumeid <uuid>
 python3 cld.py init --project <p> [--cloud <c>] [--admin-role]
 ```
 

@@ -1,6 +1,6 @@
 """cld command-line entry point.
 
-Subcommands: init | createvm | attachstorage | check.
+Subcommands: init | createvm | attachstorage | deletevolume | check | list.
 For back-compat / muscle memory, a bare invocation (or leading flags) defaults to
 `createvm`, e.g. `cld --dry-run` == `cld createvm --dry-run`.
 """
@@ -15,12 +15,13 @@ from cld.steps import (current_project, select_az, select_flavor, select_image,
                        select_network, security_review, flavor_topology,
                        flavor_warnings)
 from cld.storage import attach_storage
+from cld.deletevol import delete_volume
 from cld.listcmd import run_list, RESOURCES
 from cld.ui import out, warn, err, confirm, prompt_str, Abort
 from cld.vm import build_payload, create_vm, print_summary
 from cld.answers import save_answers, load_answers
 
-SUBCOMMANDS = {"init", "createvm", "attachstorage", "check", "list"}
+SUBCOMMANDS = {"init", "createvm", "attachstorage", "deletevolume", "check", "list"}
 
 
 def build_parser():
@@ -69,6 +70,16 @@ def build_parser():
                           "(not allowed with --disk)")
     p_attach.add_argument("--dry-run", action="store_true",
                           help="show what would be created/attached; change nothing")
+
+    p_del = sub.add_parser(
+        "deletevolume", help="permanently delete ONE unattached volume, after "
+        "showing its contents/age/history", allow_abbrev=False)
+    p_del.add_argument("--cloud", help="cloud name from clouds.yaml")
+    p_del.add_argument("--volumeid", required=True, metavar="VOLUME_ID",
+                       help="full UUID of the volume to delete; refused if it is "
+                            "attached, in a transitional state, or has snapshots")
+    p_del.add_argument("--dry-run", action="store_true",
+                       help="show the report and stop; delete nothing")
 
     p_check = sub.add_parser(
         "check", help="authenticate, print the scoped project/user, and exit",
@@ -202,6 +213,11 @@ def cmd_attachstorage(args):
     return 0
 
 
+def cmd_deletevolume(args):
+    return delete_volume(select_cloud(args.cloud), args.volumeid,
+                         dry_run=args.dry_run)
+
+
 def cmd_check(args):
     return run_check(select_cloud(args.cloud))
 
@@ -224,6 +240,7 @@ DISPATCH = {
     "init": cmd_init,
     "createvm": cmd_createvm,
     "attachstorage": cmd_attachstorage,
+    "deletevolume": cmd_deletevolume,
     "check": cmd_check,
     "list": cmd_list,
 }
@@ -243,14 +260,14 @@ def main(argv=None):
     try:
         rc = handler(args)
     except KeyboardInterrupt:
-        out("\nInterrupted; nothing created.")
+        out("\nInterrupted; nothing created or deleted.")
         return 130
     except Abort:
         # q/quit/cancel or Ctrl-D at any prompt. Every prompt runs before the
         # create/attach calls, so this can only unwind a spec that was never
         # submitted -- and rollback prompts use confirm_destructive(), which
         # maps Abort to False rather than letting it reach here.
-        out("\nAborted; nothing created.")
+        out("\nAborted; nothing created or deleted.")
         return 130
     return rc or 0
 
