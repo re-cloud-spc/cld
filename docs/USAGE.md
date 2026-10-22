@@ -90,6 +90,7 @@ python3 cld.py list flavors                  # vCPU / RAM / disk + in-use count
 python3 cld.py list images
 python3 cld.py list networks
 python3 cld.py list azs                       # availability zones + compute capacity
+python3 cld.py list hosts                     # per-compute-host vCPU/RAM from Placement (admin)
 python3 cld.py list capacity                  # Cinder pool capacity + volume quota
 python3 cld.py list clouds                    # clouds.yaml entries — no --cloud / auth needed
 ```
@@ -101,7 +102,8 @@ python3 cld.py list clouds                    # clouds.yaml entries — no --clo
 | `flavors` | vCPU / RAM / root disk + how many servers use each |
 | `images` | visibility, size, min-disk/ram, signed, in-use count |
 | `networks` | networks + subnets: CIDR, gateway, kind, port count |
-| `azs` | availability zones + per-AZ compute capacity (admin) |
+| `azs` | availability zones + per-AZ and per-host compute capacity (admin) |
+| `hosts` | per compute host: AZ, service state, servers, vCPU/RAM used/cap/free from Placement (admin) |
 | `capacity` | Cinder SDS pool capacity + this project's volume quota |
 | `clouds` | configured `clouds.yaml` entries (each = one project); local, no auth |
 
@@ -134,7 +136,7 @@ python3 cld.py createvm --non-interactive myvm.yaml
 | `--save-answers FILE` | write this run's spec to a YAML file |
 | `--non-interactive FILE` | replay a saved spec with no prompts |
 
-Flow: **cloud (project) → availability zone → flavor → image → network/subnet →
+Flow: **cloud (project) → availability zone → flavor → compute host (optional pin) → image → network/subnet →
 security → confirm → create** (then an optional floating IP). When the VM is
 ACTIVE, `cld` prints the exact `attachstorage` command to add a data volume.
 
@@ -257,10 +259,18 @@ confirmed gone (or reports `error_deleting`). Any backups remain.
 ## 6. What each createvm step shows you
 
 - **Cloud (project)** — the project is fixed by the chosen credential entry.
-- **Availability zone** (only prompts if more than one) — per-AZ host count, vCPU
-  and RAM used/total, server count, plus the Cinder and Neutron AZ lists.
+- **Availability zone** (only prompts if more than one; `internal` is never
+  offered) — per-AZ host count, vCPU and RAM used/total and RAM free summed from
+  Placement, server count, the per-host table, plus the Cinder and Neutron AZ lists.
 - **Flavor** — vCPU / RAM / root disk (the small Ceph-backed boot disk) and how
   many existing servers use each flavor.
+- **Compute host** (admin) — each compute host in the chosen AZ with free vCPU/RAM
+  from Placement, the RAM left after this flavor, and whether it fits. Enter lets
+  the scheduler decide (default). Picking a host sends Nova's 2.74 `host` field: the
+  scheduler and Placement still check it, so a full host is refused, not
+  overcommitted. A replayed `--non-interactive` spec re-checks its saved host first
+  (a real run on a host that no longer fits needs an explicit yes). No round-robin:
+  the scheduler's RAM weigher already prefers the emptiest host.
 - **Image** — size, min-disk / min-ram, visibility, whether it's signed, and how
   many servers were booted from each (boot-from-volume servers aren't counted).
 - **Network / subnet** — every usable network and its subnets with CIDR, gateway,
@@ -332,8 +342,8 @@ confirmed gone (or reports `error_deleting`). Any backups remain.
 
 - The VM boots from the image onto the flavor's small Ceph/RBD root disk; extra
   capacity comes from `attachstorage` volumes, not the root disk.
-- Hypervisor→AZ mapping relies on host aggregates carrying an `availability_zone`;
-  hosts in no such aggregate show under `(unmapped)`.
+- Host→AZ mapping comes from Nova's AZ listing; per-host capacity from Placement
+  (hypervisor stats are `None` at this Nova microversion).
 - Optional raw-Ceph cross-check (needs Ceph admin on a host, not the OpenStack
   API): `ceph df` shows pool usage behind the Cinder figures.
 
