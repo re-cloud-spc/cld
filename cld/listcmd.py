@@ -6,13 +6,14 @@ no writes and intentionally records nothing to the audit log.
 """
 
 from cld.cloud import connect, select_cloud, safe_list, list_cloud_names
+from cld.hosts import render_hosts
 from cld.inventory import Inventory, server_az
 from cld.steps import render_flavors, render_images, render_networks, render_azs
 from cld.ui import out, header, render_table
 from cld.volume import show_capacity
 
 RESOURCES = ["clouds", "servers", "volumes", "flavors", "images", "networks",
-             "azs", "capacity"]
+             "azs", "hosts", "capacity"]
 
 
 def run_list(resource, cloud_arg, all_projects=False, available=None):
@@ -37,6 +38,8 @@ def run_list(resource, cloud_arg, all_projects=False, available=None):
         render_networks(conn, project_id)
     elif resource == "azs":
         render_azs(conn, Inventory(conn))
+    elif resource == "hosts":
+        render_hosts(conn, Inventory(conn))
     elif resource == "capacity":
         header("Capacity")
         show_capacity(conn, project_id)

@@ -50,12 +50,12 @@ suite — a Python 3 package run directly. Subcommands:
 
 - `cld init` — one-time-per-project: mint an application credential, write its
   `clouds.yaml` entry.
-- `cld createvm` — provision a VM (cloud → AZ → flavor → image → network/subnet →
+- `cld createvm` — provision a VM (cloud → AZ → flavor → optional host pin → image → network/subnet →
   security → confirm → create → optional floating IP). **No data-volume step.**
 - `cld attachstorage` — create + attach a Cinder data volume to an **existing**
   server (capacity/quota → size/type → confirm → create+attach).
 - `cld list [resource]` — read-only inventory (servers/volumes/flavors/images/
-  networks/azs/capacity/clouds); default `servers`, current project unless
+  networks/azs/hosts/capacity/clouds); default `servers`, current project unless
   `--all-projects`. `volumes` shows each Cinder volume + the VM it's attached to +
   created/updated (UTC). Cinder has no last-accessed/I/O timestamp, so `updated_at`
   (last record change) is the recency stand-in — don't try to add "last accessed".
@@ -108,6 +108,8 @@ deletevol.py  delete_volume(): the only delete of a pre-existing resource. Hard 
 rbdpeek.py    READ-ONLY look at a volume's Ceph image (librbd read_only, atime updates
               disabled for this client): allocated bytes, partitions, fs superblocks.
               Self-contained: re-runs itself via `sudo -n` when the keyring is root-only.
+hosts.py      per-compute-host capacity from Placement (host_capacity/host_fit/render_hosts)
+              + the optional createvm host picker (select_host). Read-only.
 init.py       credential bootstrap (connect_admin, ensure_admin_role, merge_clouds_entry)
 answers.py    save/load a createvm spec (YAML)
 audit.py      runtime logging wiring -> logs/cld-<date>.log; audit()/warn()
@@ -203,6 +205,15 @@ confirm a `logs/cld-*.log` line appears for each invocation.
   1 key → `key_name` only (no `user_data`); 0 → neither. `vm.key_names()` tolerates a
   legacy single `key_name` (str) in old saved specs. Do **not** collapse this back to
   a single `key_name` — multi-key needs the cloud-init path.
+
+- **Host pinning goes through the scheduler, never around it.** Per-host capacity
+  comes from Placement (`hosts.host_capacity`), not hypervisor stats, which are
+  `None` at this Nova microversion. `select_host` (after the flavor, default =
+  scheduler) offers only hosts in the chosen AZ that fit the flavor; the pin is
+  sent as the Nova 2.74 `host` field via `vm.PinnedServer`, because the SDK's
+  `create_server(host=...)` silently drops it. Do **not** switch to the old
+  `az:host` forced-host syntax: it skips the scheduler filters. No round-robin
+  placement: the RAM weigher already spreads, and these hosts differ in size.
 
 - **Optional `rich`.** `ui.out()` / `ui.render_table()` degrade to plain text
   (stripping inline markup) when `rich` isn't importable, so keep using the

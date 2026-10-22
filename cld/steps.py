@@ -8,6 +8,7 @@ subpackage (one module per step).
 import ipaddress
 
 from cld.cloud import safe_list
+from cld.hosts import host_capacity, render_hosts
 from cld.ui import out, header, warn, err, render_table, choose, choose_multi, gb
 
 
@@ -39,31 +40,22 @@ def current_project(conn):
 # --------------------------------------------------------------------------- #
 # Availability zone
 # --------------------------------------------------------------------------- #
-def az_capacity_rows(conn, inv):
-    """Per-AZ compute capacity via aggregates + hypervisors (admin)."""
-    aggregates = safe_list(conn.compute.aggregates)
-    hypervisors = safe_list(conn.compute.hypervisors, details=True)
+def az_capacity_rows(conn, inv, hosts=None):
+    """Per-AZ compute capacity, summed from Placement per host (admin).
 
-    host_to_az = {}
-    for agg in aggregates:
-        az = getattr(agg, "availability_zone", None)
-        if az:
-            for host in (getattr(agg, "hosts", None) or []):
-                host_to_az[host] = az
-
+    Not from hypervisor stats: at this cluster's Nova microversion those are
+    None, which used to render every AZ as 0/0.
+    """
+    hosts = host_capacity(conn, inv) if hosts is None else hosts
     az_stats = {}
-    for h in hypervisors:
-        name = getattr(h, "name", None) or getattr(h, "hypervisor_hostname", "")
-        host = name.split(".")[0]
-        az = host_to_az.get(host) or host_to_az.get(name) or "(unmapped)"
-        s = az_stats.setdefault(az, {"vcpu": 0, "vcpu_used": 0, "ram": 0,
-                                     "ram_used": 0, "hosts": 0})
+    for h in hosts:
+        s = az_stats.setdefault(h["az"], {"vcpu": 0, "vcpu_used": 0, "ram": 0,
+                                          "ram_used": 0, "hosts": 0})
         s["hosts"] += 1
-        s["vcpu"] += getattr(h, "vcpus", 0) or 0
-        s["vcpu_used"] += getattr(h, "vcpus_used", 0) or 0
-        s["ram"] += getattr(h, "memory_size", 0) or getattr(h, "memory_mb", 0) or 0
-        s["ram_used"] += (getattr(h, "memory_used", 0)
-                          or getattr(h, "memory_mb_used", 0) or 0)
+        s["vcpu"] += h.get("VCPU", {}).get("cap", 0)
+        s["vcpu_used"] += h.get("VCPU", {}).get("used", 0)
+        s["ram"] += h["MEMORY_MB"]["cap"]
+        s["ram_used"] += h["MEMORY_MB"]["used"]
 
     srv_counts = inv.count_by_az()
     rows = []
@@ -72,6 +64,7 @@ def az_capacity_rows(conn, inv):
             az, s["hosts"],
             f"{s['vcpu_used']}/{s['vcpu']}",
             f"{gb(s['ram_used'])}/{gb(s['ram'])} MB",
+            f"{gb(s['ram'] - s['ram_used'])} MB",
             srv_counts.get(az, 0),
         ])
     return rows
@@ -81,7 +74,9 @@ def select_az(conn, inv):
     nova_azs = safe_list(conn.compute.availability_zones, details=True)
     names = [getattr(a, "name", None) for a in nova_azs
              if getattr(a, "name", None)]
-    names = [n for n in names if n]
+    # 'internal' holds the controller services, never a compute host; booting
+    # into it can only end in 'No valid host'.
+    names = [n for n in names if n and n != "internal"]
 
     if len(names) <= 1:
         if names:
@@ -99,11 +94,13 @@ def select_az(conn, inv):
 def render_azs(conn, inv):
     """Print per-AZ compute capacity + the Cinder/Neutron AZ lists (read-only)."""
     header("Availability zones")
-    cap = az_capacity_rows(conn, inv)
+    hosts = host_capacity(conn, inv)
+    cap = az_capacity_rows(conn, inv, hosts)
     if cap:
         render_table("Compute capacity per AZ",
                      ["AZ", "hosts", "vCPU used/total", "RAM used/total",
-                      "servers"], cap)
+                      "RAM free", "servers"], cap)
+    render_hosts(conn, inv, rows=hosts)
 
     cinder_azs = [getattr(a, "name", "?")
                   for a in safe_list(conn.block_storage.availability_zones)]
