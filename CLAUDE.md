@@ -8,7 +8,9 @@ This is operational tooling pointed at a **live production OpenStack cluster** (
 Kolla-Ansible controller `rc3-x-3`, internal VIP `192.168.1.100`). The `cld` CLI can
 create, attach, and **delete** real cluster resources — servers, Cinder volumes,
 Neutron ports, application credentials, and IAM role grants. There is no staging
-cloud and this directory is **not a git repo**, so there is no undo.
+cloud, so there is no undo on the cluster side. (The *code* is a git repo --
+`re-cloud-spc/cld` on GitHub, worked via branch + PR onto `main` -- but a rolled-back
+commit does not un-delete a server.)
 
 Treat every write as irreversible and high-blast-radius. Specifically:
 
@@ -76,6 +78,10 @@ rename is clean — there are no old-name shims.)
 
 `README.md` / `docs/USAGE.md` — end-user docs; keep them in sync with behaviour
 changes (they duplicate the flag tables and security-behaviour list).
+`docs/BACKUP_RECOVERY.md`, `docs/SWAP_SETUP.md` — human runbooks for procedures `cld`
+deliberately does **not** automate (Cinder snapshot/backup; in-guest swap). They are run
+by hand with the `openstack` CLI + in-guest shell; do not turn them into subcommands
+without the access they assume.
 
 ## Package layout (`cld/`)
 
@@ -101,6 +107,8 @@ storage.py    attach_storage(): create+attach a new volume, OR with --disk attac
               boot (_warn_boot_label_clash). cld
               does NOT mount (no SSH keys, no hypervisor/libvirt; the API can't mount a
               guest FS), so don't add an auto-mount path without that access.
+              A failed attach re-reads the volume from Cinder (_recheck_volume) and
+              reports its VERIFIED status; it never asserts "unchanged".
 deletevol.py  delete_volume(): the only delete of a pre-existing resource. Hard refusals
               (attached incl. Nova record + RBD watcher, non-final status, other project,
               snapshots -- never cascade), a report, confirm_destructive + typed ID prefix,
@@ -114,6 +122,7 @@ init.py       credential bootstrap (connect_admin, ensure_admin_role, merge_clou
 answers.py    save/load a createvm spec (YAML)
 audit.py      runtime logging wiring -> logs/cld-<date>.log; audit()/warn()
 ui.py         out/header/warn/err/render_table + choose/prompt_*/confirm/gb (rich-optional)
+              plus Abort + confirm_destructive (the universal-escape contract, below)
 ```
 
 `steps.py` is the natural seam to split into a `steps/` subpackage as steps grow.
@@ -127,13 +136,13 @@ pip install -r requirements.txt           # openstacksdk, rich (optional), PyYAM
 python3 cld.py check --cloud <name>                 # auth smoke test, prints scope, exits
 python3 cld.py list [resource] [--cloud <name>] [--all-projects] [--available 0|1]  # inventory, no writes, unlogged
 python3 cld.py createvm --cloud <name> --dry-run    # full wizard, prints payload, creates nothing
-python3 cld.py attachstorage --cloud <name> --server <s> --dry-run   # plan only
+python3 cld.py attachstorage --cloud <name> --serverid <id> --dry-run  # plan only
 python3 cld.py deletevolume --cloud <name> --volumeid <uuid> --dry-run  # report only
 
 # Writes to the cluster — human-initiated only:
 python3 cld.py createvm --cloud <name> [--save-answers f.yaml]
 python3 cld.py createvm --non-interactive f.yaml
-python3 cld.py attachstorage --cloud <name> --server <s> [--size GB] [--type T]
+python3 cld.py attachstorage --cloud <name> --serverid <id> [--size GB] [--type T]
 python3 cld.py deletevolume --cloud <name> --volumeid <uuid>
 python3 cld.py init --project <p> [--cloud <c>] [--admin-role]
 ```
@@ -170,6 +179,18 @@ confirm a `logs/cld-*.log` line appears for each invocation.
   sidesteps this everywhere by passing `load_envvars=False`; `cld check` exists
   specifically as an env-immune way to verify auth.
 
+- **A failed attach reports verified state, never assumed state.** A Nova 500 on
+  `POST /os-volume_attachments` can land on either side of Cinder reserving the volume,
+  so the pre-attach snapshot proves nothing. `storage._recheck_volume()` does one
+  read-only `get_volume` in the failure handler and reports what is actually there:
+  `available` (safe to re-run), `reserved`/`attaching` (Nova got in first — a re-run is
+  refused, a human must clear the attachment), `in-use` (the attach may have *succeeded*),
+  `error`, or UNKNOWN when the re-read itself fails. That status is also written to the
+  audit line as `status_after=`, which is what makes a post-mortem answerable from
+  `logs/cld-*.log` alone. It gates `_offer_volume_rollback` too: a volume Nova may have
+  reserved or attached is never offered for deletion at all (unverified still prompts,
+  still defaulting to keep). This is reporting only — **no retry** was added; see #111.
+
 - **#112 is fixed structurally, not by retry.** VM creation and volume attach are two
   separate subcommands. `attachstorage` runs against a pre-existing server, so a
   transient Cinder failure (rc3 #111) can only roll back the dangling volume, never
@@ -195,6 +216,27 @@ confirm a `logs/cld-*.log` line appears for each invocation.
   setup step). Every mutation and rollback delete calls `audit.audit(action, id=...)`
   / `audit.warn(...)` with resource IDs; reads are not logged. Keep adding an audit
   call to any new write.
+
+- **Every prompt is escapable, and escaping never destroys (rc3 #116).** All
+  numeric/menu prompts funnel through `ui._ask()`, which raises `ui.Abort` on Ctrl-D or
+  `q`/`quit`/`cancel`; free text uses `ui._ask_text()`, where Ctrl-D aborts but `q` is a
+  legitimate value (a VM may be named `q`). `Abort` is caught **once**, in `cli.main()`
+  ("Aborted; nothing created", exit 130), so no caller needs a "did they cancel?" branch
+  and a half-built spec cannot leak past a cancelled prompt. The one place `Abort` must
+  not propagate is a rollback prompt: `ui.confirm_destructive()` maps it to `False`, so
+  quitting at "Delete the volume that failed to attach?" keeps the resource. Use
+  `confirm_destructive` — not `confirm` — for every delete/rollback question, and add new
+  prompts via the `ui` helpers rather than bare `input()`.
+
+- **Flavors are preflighted for unsatisfiable NUMA/hugepage extra specs.**
+  `steps._flavor_topology()` returns `(note, blocker)`: `hw:numa_nodes=N` that does not
+  divide the flavor's vCPU/RAM evenly (without explicit `hw:numa_cpus.N`/`hw:numa_mem.N`)
+  is a hard **blocker** — Nova rejects the boot with a 400 — and gets a red `!` in the
+  table plus a warning. `hw:mem_page_size` is only a **soft note**: whether hugepages are
+  reserved is a compute-host fact `cld` cannot read, so it warns about "No valid host"
+  rather than blocking. The `topology` column is appended only when some flavor has
+  specs, keeping the common table unchanged. Preserve that blocker/note distinction —
+  promoting the soft note to a blocker hides usable flavors.
 
 - **SSH keys: a list split across two delivery mechanisms.** The security step
   multi-selects keypairs (`security["key_names"]`, a list; `steps.security_review`

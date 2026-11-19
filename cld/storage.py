@@ -264,10 +264,17 @@ def _attach_existing(conn, server, volume_id, dry_run):
         audit.audit("volume.attach", id=volume.id, server=server.id, existing=True)
     except Exception as e:  # noqa: BLE001
         err(f"attach failed: {e}")
-        audit.warn("volume.attach.failed", id=volume.id, server=server.id,
-                   existing=True, phase="attach", error=str(e))
-        _diagnose_failure("attach", volume, e)
-        warn("the volume was not modified or deleted; it remains as it was.")
+        fresh = None
+        try:
+            fresh = _diagnose_failure(conn, "attach", volume, e)
+        finally:
+            # finally: the audit line must survive anything the diagnosis does.
+            audit.warn("volume.attach.failed", id=volume.id, server=server.id,
+                       existing=True, phase="attach", error=str(e),
+                       status_after=getattr(fresh, "status", None))
+        # The guarantee cld can actually make. What Nova did to the volume is
+        # reported by _recheck_volume above, from a real Cinder read.
+        warn("cld did not create, modify, or delete this volume.")
         return None
 
     out()
@@ -290,24 +297,82 @@ _CLIENT_CONN_MARKERS = ("connection refused", "connection reset", "remotedisconn
                         "connection aborted", "read timed out")  # never reached Nova
 
 
-def _attach_checks(volume):
-    """The three read-only checks that settle transient #111 vs persistent."""
+# Post-failure Cinder statuses, grouped by what they mean for the operator.
+# A 500 from POST /os-volume_attachments can land on either side of Cinder
+# reserving the volume, so the pre-attach snapshot proves nothing -- we re-read.
+_NOVA_RESERVED = ("reserved", "attaching")      # Nova got in before failing
+_MAYBE_ATTACHED = ("in-use", "detaching")       # the attach may have succeeded
+
+
+def _recheck_volume(conn, volume):
+    """Re-read the volume from Cinder after a failed attach and report what is
+    ACTUALLY there. Returns the fresh volume, or None if it could not be read.
+
+    Read-only (one GET), and it never raises: it runs inside an exception
+    handler. An unreadable volume is reported as UNKNOWN, never as "unchanged" --
+    asserting cluster state we did not read is the bug this exists to prevent.
+    """
+    vid = getattr(volume, "id", None)
+    if conn is None or not vid:
+        return None
+    try:
+        fresh = conn.block_storage.get_volume(vid)
+    except Exception as e:  # noqa: BLE001
+        fresh = None
+        warn(f"could not re-read volume {vid} to verify its state ({e}). Treat its "
+             f"status as UNKNOWN and check with 'openstack volume show {vid}' "
+             f"before retrying.")
+        return None
+    if fresh is None:
+        warn(f"volume {vid} could not be found on re-read; its state is UNKNOWN.")
+        return None
+
+    status = getattr(fresh, "status", None)
+    attachments = getattr(fresh, "attachments", None) or []
+    if status in _MAYBE_ATTACHED or attachments:
+        warn(f"volume {vid} is now '{status}' -- the attach may have SUCCEEDED "
+             f"despite the error. Do not re-run blindly; verify first:")
+        out(f"  openstack volume show {vid}")
+        out(f"  it currently shows attached to: {_attached_servers(conn, fresh)}")
+    elif status in _NOVA_RESERVED:
+        warn(f"volume {vid} is now '{status}' -- Nova reserved it in Cinder before "
+             f"the call failed, so it is no longer 'available' and a plain re-run "
+             f"will be refused. The stale attachment must be cleared by a human:")
+        out(f"  openstack volume attachment list --volume {vid}")
+    elif status == "error":
+        warn(f"volume {vid} is now in 'error'; a re-run will be refused. Check the "
+             f"cinder-volume log for this volume before doing anything else.")
+    elif status == "available":
+        out(f"[dim]Verified: volume {vid} is still 'available' (unchanged); a re-run "
+            f"retries the attach.[/dim]")
+    else:
+        warn(f"volume {vid} is now '{status}' (not 'available'); a re-run will be "
+             f"refused until it returns to 'available'.")
+    return fresh
+
+
+def _attach_checks(conn, volume):
+    """The three read-only checks that settle transient #111 vs persistent,
+    followed by the VERIFIED current state of the volume. Returns the fresh
+    volume (or None)."""
     out("  1. nova-api.log around the failure time -- the wrapped socket error:")
     out("       reset / RemoteDisconnected / BadStatusLine  -> transient #111 (clears on retry)")
     out("       refused / timed out / DNS failure           -> cinder-api unreachable (persistent)")
     out("  2. openstack volume service list  -- are cinder-api/scheduler/volume 'up'?")
     out("  3. re-run attachstorage  -- a keep-alive race clears within a retry or two.")
-    vid = getattr(volume, "id", None)
-    if vid:
-        out(f"[dim]Volume {vid} is unchanged and still 'available'; a re-run retries the attach.[/dim]")
+    return _recheck_volume(conn, volume)
 
 
-def _diagnose_failure(phase, volume, e):
+def _diagnose_failure(conn, phase, volume, e):
     """Print an honest, actionable diagnosis after a create/attach failure.
 
-    Classifies only what is visible client-side and points at the read-only checks
+    Classifies only what is visible client-side, points at the read-only checks
     that distinguish a transient #111 keep-alive race from a persistent Cinder
-    outage. Adds no retry and triggers no live operation."""
+    outage, and -- where Nova may have touched the volume -- re-reads it. Adds no
+    retry and triggers no live operation (the re-read is a GET).
+
+    Returns the freshly-read volume, or None when it was not read (the request
+    never reached Nova, Nova rejected it outright, or the re-read failed)."""
     msg = str(e).lower()
 
     if phase == "attach":
@@ -318,23 +383,22 @@ def _diagnose_failure(phase, volume, e):
                  "rejection of the request itself.")
             out("[dim]Consistent with the transient HAProxy keep-alive race (#111), but "
                 "the 500 alone does not prove it. To be sure:[/dim]")
-            _attach_checks(volume)
-            return
+            return _attach_checks(conn, volume)
         if got_500:
             warn("The attach call returned a 500 server error from Nova. On this "
                  "cluster that is most often the #111 Nova->Cinder connection race -- "
                  "but the 500 alone does not prove the cause.")
-            _attach_checks(volume)
-            return
+            return _attach_checks(conn, volume)
         if any(m in msg for m in _CLIENT_CONN_MARKERS):
             warn("Could not reach the Nova compute API at all (no HTTP response).")
             out("  - is nova-api up, and the VIP/HAProxy frontend (192.168.1.100:8774) reachable?")
             out("  - openstack server list  -- does any compute call work right now?")
-            return
+            out("[dim]The request never reached Nova, so the volume is untouched.[/dim]")
+            return None
         # Some other attach error (e.g. a 4xx rejection) -- show it plainly.
         warn("Attach was rejected by Nova (not a connection failure). Inspect the "
              "message above and nova-api.log for the specific reason.")
-        return
+        return _recheck_volume(conn, volume)
 
     if phase in ("create", "wait"):
         detail = ("the volume never reached 'available' (stuck creating)"
@@ -343,10 +407,11 @@ def _diagnose_failure(phase, volume, e):
         out("  - openstack volume service list  -- is cinder-volume 'up'?")
         out("  - cld list capacity  -- can this host reach the Cinder API, and is there room?")
         out("  - check the volume type is valid and quota/pool capacity allow the size.")
-        return
+        return None
 
     warn("Unexpected failure. Inspect nova-api.log and the cinder-api/volume logs "
          "around the failure time for the underlying cause.")
+    return None
 
 
 def _create_and_attach(conn, server, spec):
@@ -370,10 +435,15 @@ def _create_and_attach(conn, server, spec):
         audit.audit("volume.attach", id=volume.id, server=server.id)
     except Exception as e:  # noqa: BLE001
         err(f"volume create/attach failed: {e}")
-        audit.warn("volume.failed", id=getattr(volume, "id", None),
-                   server=server.id, phase=phase, error=str(e))
-        _diagnose_failure(phase, volume, e)
-        _offer_volume_rollback(conn, volume)
+        fresh = None
+        try:
+            fresh = _diagnose_failure(conn, phase, volume, e)
+        finally:
+            # finally: the audit line must survive anything the diagnosis does.
+            audit.warn("volume.failed", id=getattr(volume, "id", None),
+                       server=server.id, phase=phase, error=str(e),
+                       status_after=getattr(fresh, "status", None))
+        _offer_volume_rollback(conn, volume, fresh)
         return None
 
     out()
@@ -383,11 +453,26 @@ def _create_and_attach(conn, server, spec):
     return volume
 
 
-def _offer_volume_rollback(conn, volume):
+def _offer_volume_rollback(conn, volume, fresh=None):
     """Offer to delete the dangling volume. Defaults to KEEPING it, and NEVER
     touches the server (it pre-existed this command). Structural #112 guard.
-    Quitting (q/Ctrl-D) keeps the volume too -- see confirm_destructive (#116)."""
+    Quitting (q/Ctrl-D) keeps the volume too -- see confirm_destructive (#116).
+
+    `fresh` is the volume as re-read from Cinder after the failure (see
+    _recheck_volume), or None if it could not be read. A volume Nova may already
+    have reserved or attached is never offered for deletion at all; an unverified
+    one still prompts, and that prompt still defaults to keeping it."""
     if volume is None:
+        return
+    status = getattr(fresh, "status", None)
+    attachments = getattr(fresh, "attachments", None) or []
+    if status in _MAYBE_ATTACHED or attachments:
+        warn(f"not offering to delete this volume: Cinder shows it '{status}', so the "
+             f"attach may have succeeded. Detach it by hand if it is unwanted.")
+        return
+    if status in _NOVA_RESERVED:
+        warn(f"not offering to delete this volume: Cinder shows it '{status}', so Nova "
+             f"holds an attachment on it. That has to be cleared by hand first.")
         return
     if not confirm_destructive("Delete the volume that failed to attach?",
                                default=False):

@@ -6,3 +6,6 @@ clouds.yaml
 
 # saved-answers specs (cld createvm --save-answers)
 *.profile
+
+# local secrets (Brevo API key etc.)
+.env
