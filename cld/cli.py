@@ -75,6 +75,58 @@ examples:
 """
 
 
+_CREATE_EPILOG = """\
+steps:
+  cloud (= project) -> availability zone -> flavor -> compute host -> image
+  -> network/subnet -> security -> summary -> confirm (default No) -> create
+  Data volumes are not part of createvm; add one afterwards with
+  `cld attachstorage`.
+
+compute host (admin; shown after the flavor):
+  a table of every compute host in the chosen AZ with free vCPU / RAM from
+  Placement, the RAM left after this flavor, and whether it fits. Press
+  Enter to let the scheduler decide (the default; it already prefers the
+  host with the most free RAM). Or pick one of the hosts that fit: the pin is
+  sent as Nova's `host` field (API 2.74), which still runs the scheduler and
+  the Placement claim, so a full host is refused, never overcommitted. There
+  is no round-robin placement. See the same table any time with
+  `cld list hosts`.
+
+--non-interactive FILE:
+  re-checks the saved flavor and the saved host against current capacity.
+  If the host no longer fits, a dry run only warns; a real run asks
+  "Proceed anyway?" (default No).
+
+examples:
+  cld list hosts --cloud admin                      # where is there room?
+  cld createvm --cloud <project> --dry-run          # walk it, create nothing
+  cld createvm --cloud <project> --save-answers vm.yaml
+  cld createvm --non-interactive vm.yaml --dry-run
+"""
+
+_LIST_EPILOG = """\
+resources:
+  clouds    clouds.yaml entries (no --cloud or auth needed)
+  servers   name, ID, status, flavor, IP, AZ (default)
+  volumes   Cinder volumes + the VM each is attached to; filter with --available
+  flavors   vCPU / RAM / root disk + how many servers use each
+  images    size, min disk/RAM, visibility + how many servers use each
+  networks  usable networks/subnets, CIDR, gateway, external flag
+  azs       per-AZ capacity (summed from Placement) + the per-host table
+  hosts     per compute host: AZ, service state, server count, vCPU and RAM
+            used/cap/free from Placement -- the numbers the scheduler claims
+            against (admin; cap = (total - reserved) x allocation ratio;
+            SHUTOFF servers still hold their allocation)
+  capacity  Cinder (Ceph) pool capacity + this project's volume quota
+
+Everything here is read-only and is not written to the audit log.
+
+examples:
+  cld list hosts --cloud admin
+  cld list volumes --cloud admin --all-projects --available 1
+"""
+
+
 def build_parser():
     ap = argparse.ArgumentParser(
         prog="cld",
@@ -94,8 +146,13 @@ def build_parser():
                         help="grant the admin role on the project first (for "
                              "cluster-wide inventory visibility)")
 
-    p_create = sub.add_parser("createvm", help="provision a VM (no data volume)",
-                              allow_abbrev=False)
+    p_create = sub.add_parser(
+        "createvm", help="provision a VM (no data volume)",
+        description="Interactive wizard that provisions ONE VM, showing live\n"
+                    "capacity at every step. Optionally pins it to a compute host.\n"
+                    "Creates nothing until you confirm (default No).",
+        epilog=_CREATE_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False)
     p_create.add_argument("--cloud", help="cloud name from clouds.yaml")
     p_create.add_argument("--dry-run", action="store_true",
                           help="walk the wizard and print the payload; change "
@@ -150,6 +207,8 @@ def build_parser():
 
     p_list = sub.add_parser(
         "list", help="show read-only inventory of the cloud",
+        description="Show read-only inventory of the cloud. Makes no changes.",
+        epilog=_LIST_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False)
     p_list.add_argument("resource", nargs="?", default="servers",
                         choices=RESOURCES,
