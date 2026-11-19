@@ -307,6 +307,11 @@ confirmed gone (or reports `error_deleting`). Any backups remain.
 - **Rollback defaults to keeping resources** — on a mid-create failure the rollback
   prompt defaults to *No*, so Enter leaves everything for inspection.
   `attachstorage` rollback only ever deletes the dangling volume, never the server.
+- **A failed attach reports the volume's re-read state**, not the state it had before
+  the call: `available` (safe to re-run), `reserved`/`attaching` (Nova reserved it —
+  clear the attachment by hand first), `in-use` (the attach may have succeeded), or
+  UNKNOWN if the volume could not be re-read. `cld` never retries automatically, and
+  never offers to delete a volume Nova may have reserved or attached.
 - Every write action is appended to `logs/cld-<YYYYMMDD>.log` with resource IDs.
 
 ## 8. Troubleshooting

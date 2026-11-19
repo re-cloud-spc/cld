@@ -277,6 +277,13 @@ in-guest access.
   prompt defaults to *No* — pressing Enter leaves everything in place for
   inspection. `attachstorage` rollback only ever deletes the dangling volume, never
   the server.
+- **After a failed attach, the volume's state is re-read, not assumed.** A 500 from
+  Nova can land either before or after Cinder reserved the volume, so `cld` does one
+  read-only re-read and reports the verified status — `available` (safe to re-run),
+  `reserved`/`attaching` (a human must clear the attachment first), `in-use` (the
+  attach may have succeeded), or UNKNOWN if the re-read failed. A volume Nova may
+  have reserved or attached is never offered for deletion. No automatic retry is
+  performed.
 
 ## Audit log
 
