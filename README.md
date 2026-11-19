@@ -94,6 +94,7 @@ python3 cld.py list volumes                  # Cinder volumes + the VM each is a
 python3 cld.py list volumes --available=1    # only available (unattached, attachable) volumes
 python3 cld.py list volumes --available=0    # only the rest (in-use, error, creating, ...)
 python3 cld.py list flavors                  # vCPU / RAM / disk + in-use count
+python3 cld.py list hosts                    # per-compute-host vCPU/RAM from Placement (admin)
 python3 cld.py list capacity                 # Cinder pool capacity + volume quota
 python3 cld.py list clouds                   # configured clouds.yaml entries (no auth needed)
 ```
@@ -105,7 +106,8 @@ python3 cld.py list clouds                   # configured clouds.yaml entries (n
 | `flavors` | vCPU / RAM / root disk + how many servers use each |
 | `images` | visibility, size, min-disk/ram, signed, in-use count |
 | `networks` | networks + subnets: CIDR, gateway, kind, port count |
-| `azs` | availability zones + per-AZ compute capacity (admin) |
+| `azs` | availability zones + per-AZ and per-host compute capacity (admin) |
+| `hosts` | per compute host: AZ, service state, servers, vCPU/RAM used/cap/free from Placement (admin) |
 | `capacity` | Cinder SDS pool capacity + this project's volume quota |
 | `clouds` | configured `clouds.yaml` entries (each = one project); local, no auth |
 
@@ -226,9 +228,16 @@ in-guest access.
 ## What "inventory" means at each step
 
 - **Project** — fixed by the chosen credential; the tool re-confirms the scope.
-- **AZ** — per-AZ host count, vCPU and RAM used/total (from hypervisor stats),
-  server count, plus the Cinder and Neutron AZ lists.
+- **AZ** — per-AZ host count, vCPU and RAM used/total and RAM free (summed from
+  Placement), server count, the per-host table, plus the Cinder and Neutron AZ lists.
 - **Flavor** — vCPU/RAM/root-disk and how many existing servers use each flavor.
+- **Compute host** (after the flavor; admin) — every compute host in the chosen AZ
+  with free vCPU/RAM from **Placement**, the RAM left after placing this flavor, and
+  whether it fits. Enter = let the scheduler decide (the default); otherwise pick a
+  host that fits (listed most-free-RAM first). The pin is sent as Nova's 2.74 `host`
+  field, which still runs the scheduler and the Placement claim, so a full host is
+  refused rather than overcommitted. There is no round-robin: the scheduler's RAM
+  weigher already prefers the emptiest host.
 - **Image** — size, min-disk/min-ram, visibility, signed?, and how many servers
   were booted from each (boot-from-volume servers aren't counted).
 - **Data volume** (`attachstorage`) — true SDS capacity from Cinder pool stats
@@ -277,10 +286,11 @@ rollback delete, with resource IDs. Inventory reads are not logged.
 
 ## Notes / limitations
 
-- AZ capacity needs admin (hypervisor + aggregate reads); without it that table
-  is skipped gracefully.
-- Hypervisor→AZ mapping uses host aggregates that carry an `availability_zone`;
-  hosts in no such aggregate show under `(unmapped)`.
+- AZ / host capacity needs admin (Placement + compute service reads); without it
+  the tables are skipped and the host step falls back to the scheduler. It reads
+  Placement because Nova's hypervisor stats are `None` at this microversion.
+- Pinning a host needs the admin role (Nova policy on `host`). The `internal` AZ
+  (controllers) is never offered.
 - The encrypted-type detection and SDS pool stats require Cinder admin.
 - This tool was previously named `osvm`; it is now `cld` (entry point `cld.py`
   or `python3 -m cld`). There are no old-name shims.

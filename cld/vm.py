@@ -7,11 +7,25 @@ failure from ever rolling back a healthy, ACTIVE server; see rc3 issue #112).
 import base64
 
 from openstack import exceptions as os_exc
+from openstack import resource
+from openstack.compute.v2 import server as _server
 
 from cld import audit
 from cld.steps import next_available_ip
 from cld.ui import (out, header, warn, err, render_table, confirm,
                     confirm_destructive)
+
+
+class PinnedServer(_server.Server):
+    """Server that also sends Nova's 2.74 `host` field on create.
+
+    The SDK's Server has no writable `host` (compute_host maps to the read-only
+    OS-EXT-SRV-ATTR:host), so a plain create_server(host=...) silently drops it
+    and the VM lands wherever the scheduler likes. The SDK negotiates up to 2.91,
+    so the field is accepted; the scheduler still filters and claims Placement
+    for the requested host, so a full host fails cleanly (admin only).
+    """
+    requested_host = resource.Body("host")
 
 
 def key_names(security):
@@ -64,6 +78,8 @@ def build_payload(spec, conn=None, port_id=None):
     }
     if spec.get("az"):
         payload["availability_zone"] = spec["az"]
+    if spec.get("host"):
+        payload["requested_host"] = spec["host"]
     names = key_names(spec["security"])
     if names:
         # First key -> Nova keypair (keeps the Horizon/CLI association); any
@@ -115,9 +131,13 @@ def create_vm(conn, spec):
     out()
     out("[bold]Creating server...[/bold]")
     try:
-        server = conn.compute.create_server(**payload)
+        if spec.get("host"):
+            server = PinnedServer.new(**payload).create(conn.compute)
+        else:
+            server = conn.compute.create_server(**payload)
         audit.audit("server.create", id=server.id, name=spec["name"],
-                    keys=len(key_names(spec["security"])))
+                    keys=len(key_names(spec["security"])),
+                    host=spec.get("host") or "scheduler")
     except Exception as e:  # noqa: BLE001
         err(f"server create failed: {e}")
         audit.warn("server.create.failed", name=spec["name"], error=str(e))
@@ -125,8 +145,13 @@ def create_vm(conn, spec):
         return None
     try:
         server = conn.compute.wait_for_server(server, wait=600)
-        out(f"[green]Server ACTIVE:[/green] {server.name} ({server.id})")
-        audit.audit("server.active", id=server.id, name=server.name)
+        landed = getattr(server, "compute_host", None)
+        out(f"[green]Server ACTIVE:[/green] {server.name} ({server.id})"
+            + (f" on {landed}" if landed else ""))
+        audit.audit("server.active", id=server.id, name=server.name,
+                    host=landed or "?")
+        if spec.get("host") and landed and landed != spec["host"]:
+            warn(f"asked for host {spec['host']} but the server is on {landed}")
     except Exception as e:  # noqa: BLE001
         err(f"server did not become active: {e}")
         audit.warn("server.active.failed", id=server.id, error=str(e))
@@ -191,6 +216,7 @@ def print_summary(spec):
         ["name", spec["name"]],
         ["project", spec.get("project_name", "(current scope)")],
         ["availability zone", spec.get("az") or "(scheduler)"],
+        ["compute host", spec.get("host") or "(scheduler)"],
         ["flavor", spec.get("flavor_name")],
         ["image", spec.get("image_name")],
         ["network/subnet", f"{spec['network']['network_name']} "

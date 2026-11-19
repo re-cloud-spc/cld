@@ -11,6 +11,7 @@ import sys
 from cld import audit
 from cld.cloud import connect, select_cloud, run_check
 from cld.inventory import Inventory
+from cld.hosts import host_capacity, host_fit, select_host
 from cld.steps import (current_project, select_az, select_flavor, select_image,
                        select_network, security_review, flavor_topology,
                        flavor_warnings)
@@ -179,6 +180,7 @@ def run_interactive(cloud):
     if not flavor:
         err("a flavor is required")
         sys.exit(1)
+    host = select_host(conn, inv, flavor, az)
     image = select_image(conn, inv)
     if not image:
         err("an image is required")
@@ -198,6 +200,7 @@ def run_interactive(cloud):
         "project_id": project_id,
         "project_name": project_name,
         "az": az,
+        "host": host,
         "flavor_id": flavor.id, "flavor_name": flavor.name,
         "image_id": image.id, "image_name": image.name,
         "network": network,
@@ -230,6 +233,35 @@ def _check_saved_flavor(conn, spec, dry_run):
     return confirm("Proceed anyway?", default=False)
 
 
+def _check_saved_host(conn, spec, dry_run):
+    """Re-check a saved spec's pinned host against Placement NOW. -> True to go on.
+
+    The room that was there when the spec was saved may be gone. Nova would
+    refuse anyway (the 2.74 host request still runs the scheduler), but only
+    after cld has reserved a port. A dry run only reports; a real run on a host
+    that no longer fits needs an explicit yes.
+    """
+    host = spec.get("host")
+    if not host:
+        return True
+    try:
+        flavor = conn.compute.get_flavor(spec["flavor_id"])
+    except Exception:  # noqa: BLE001 - missing flavor surfaces at create time
+        return True
+    row = next((r for r in host_capacity(conn) if r["host"] == host), None)
+    if row is None:
+        warn(f"saved host '{host}' is not a known compute host (or Placement "
+             "is unreadable without the admin role)")
+    else:
+        reason = host_fit(row, flavor)
+        if not reason:
+            return True
+        warn(f"saved host '{host}' has no room for '{flavor.name}': {reason}")
+    if dry_run:
+        return True
+    return confirm("Proceed anyway?", default=False)
+
+
 def cmd_createvm(args):
     cloud = select_cloud(args.cloud)
     audit.audit("createvm.start", cloud=cloud, dry_run=args.dry_run)
@@ -240,7 +272,8 @@ def cmd_createvm(args):
         # This path skips select_flavor, so a saved spec pinned to a flavor with
         # unsatisfiable NUMA specs would hit the same create-time 400. Same
         # check, same default-to-No gate.
-        if not _check_saved_flavor(conn, spec, args.dry_run):
+        if not (_check_saved_flavor(conn, spec, args.dry_run)
+                and _check_saved_host(conn, spec, args.dry_run)):
             out("Aborted; nothing created.")
             return 0
     else:
