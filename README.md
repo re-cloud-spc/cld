@@ -15,6 +15,7 @@ Subcommands:
 | `cld attachstorage` | create + attach a Cinder data volume to an **existing** server |
 | `cld deletevolume` | permanently delete ONE **unattached** volume, after a report of its contents, age and history |
 | `cld check` | authenticate, print the scoped project/user, and exit |
+| `cld completion` | print a bash completion script (see [Shell completion](#shell-completion-bash)) |
 
 > **VM creation and data-volume attachment are deliberately two separate steps.**
 > `createvm` never creates volumes; afterwards you run `attachstorage` against the
@@ -214,6 +215,24 @@ volume), then type the first 8 characters of the volume ID. `cld` re-reads the v
 and refuses if anything changed while you were deciding. It then deletes without
 force, writes a `volume.delete` audit line, and polls Cinder until the volume is
 confirmed gone (or reports `error_deleting`). Any backups remain.
+
+## Shell completion (bash)
+
+`cld completion bash` prints a completion script generated from cld's own argument
+parser: subcommands, each subcommand's flags, `list` resources, `--available 0|1`,
+`--cloud` names from `clouds.yaml` (entry names only, read at TAB time), and file
+paths for `--save-answers` / `--non-interactive`. IDs, sizes and types are not
+completed (that would need API calls). It works for `cld`, `./cld.py`,
+`python3 cld.py` and `python3 -m cld`; ordinary `python3 <TAB>` keeps its usual
+completion. Local only: no connection, nothing logged.
+
+```bash
+mkdir -p ~/.local/share/cld
+python3 cld.py completion bash > ~/.local/share/cld/completion.bash
+echo 'source ~/.local/share/cld/completion.bash' >> ~/.bashrc   # once
+```
+
+Regenerate the file after pulling a cld change that adds flags or subcommands.
 
 ## Backup & recovery
 

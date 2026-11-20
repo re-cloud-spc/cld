@@ -22,7 +22,8 @@ from cld.ui import out, warn, err, confirm, prompt_str, Abort
 from cld.vm import build_payload, create_vm, print_summary
 from cld.answers import save_answers, load_answers
 
-SUBCOMMANDS = {"init", "createvm", "attachstorage", "deletevolume", "check", "list"}
+SUBCOMMANDS = {"init", "createvm", "attachstorage", "deletevolume", "check", "list",
+               "completion"}
 
 
 _ATTACH_EPILOG = """\
@@ -127,6 +128,19 @@ examples:
 """
 
 
+_COMPLETION_EPILOG = """\
+completes `cld`, `cld.py` / `./cld.py`, `python3 cld.py` and `python3 -m cld`;
+plain `python3 <TAB>` keeps its usual completion.
+
+install (once; regenerate after upgrading cld):
+  python3 cld.py completion bash > ~/.local/share/cld/completion.bash
+  echo 'source ~/.local/share/cld/completion.bash' >> ~/.bashrc
+
+or just for this shell:
+  source <(python3 cld.py completion bash)
+"""
+
+
 def build_parser():
     ap = argparse.ArgumentParser(
         prog="cld",
@@ -222,6 +236,16 @@ def build_parser():
                         metavar="0|1",
                         help="volumes: 1 = only available (unattached) volumes, "
                              "0 = only unavailable ones; default is all")
+
+    p_comp = sub.add_parser(
+        "completion", help="print a shell completion script",
+        description="Print a bash completion script for cld (subcommands, flags,\n"
+                    "list resources, --cloud names from clouds.yaml). Local only:\n"
+                    "no connection, nothing logged.",
+        epilog=_COMPLETION_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False)
+    p_comp.add_argument("shell", nargs="?", default="bash", choices=["bash"],
+                        help="shell to generate for (default: bash)")
 
     return ap
 
@@ -383,6 +407,12 @@ def cmd_list(args):
                     available=args.available)
 
 
+def cmd_completion(args):
+    from cld.completion import bash_script
+    sys.stdout.write(bash_script(build_parser()))
+    return 0
+
+
 def cmd_init(args):
     from cld.init import init_command
     audit.audit("init.start", project=args.project, cloud=args.cloud or args.project)
@@ -396,6 +426,7 @@ DISPATCH = {
     "deletevolume": cmd_deletevolume,
     "check": cmd_check,
     "list": cmd_list,
+    "completion": cmd_completion,
 }
 
 

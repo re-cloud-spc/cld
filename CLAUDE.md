@@ -71,6 +71,10 @@ suite — a Python 3 package run directly. Subcommands:
   cld audit history. Refuses attached/transitional/cross-project/snapshotted volumes
   and tells the operator to detach first; it never detaches.
 - `cld check` — authenticate, print the scoped project/user, exit (env-immune).
+- `cld completion [bash]` — print a bash completion script generated from
+  `build_parser()` (local only, no connection, unlogged). Adding a flag or subcommand
+  needs no completion edit; only new value types (e.g. another file flag →
+  `completion._FILE_DESTS`) do.
 
 Entry points: `python3 cld.py <sub>` or `python3 -m cld <sub>`; a bare invocation or
 leading flag defaults to `createvm`. (The tool was previously named `osvm`; the
@@ -118,6 +122,8 @@ rbdpeek.py    READ-ONLY look at a volume's Ceph image (librbd read_only, atime u
               Self-contained: re-runs itself via `sudo -n` when the keyring is root-only.
 hosts.py      per-compute-host capacity from Placement (host_capacity/host_fit/render_hosts)
               + the optional createvm host picker (select_host). Read-only.
+completion.py `cld completion bash`: completion script generated from the argparse parser;
+              --cloud names parsed by awk at TAB time (names only, never values).
 init.py       credential bootstrap (connect_admin, ensure_admin_role, merge_clouds_entry)
 answers.py    save/load a createvm spec (YAML)
 audit.py      runtime logging wiring -> logs/cld-<date>.log; audit()/warn()
