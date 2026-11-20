@@ -3,16 +3,24 @@
 Decoupling storage from VM creation is the structural fix for rc3 issue #112:
 this command operates on a pre-existing server, so its rollback can only ever
 delete the dangling volume -- it never touches the server.
+
+After the attach it goes INTO the guest (cld.guest: qemu-guest-agent, SSH as a
+fallback) and lays the disk out with the operator (cld.guestdisk). An old root
+disk is only attached when the operator has agreed, by typing its ID, that it is
+wiped right after: its cloud-image labels would otherwise hijack the VM's boot.
 """
 
 import time
 
-from cld import audit
+from cld import audit, rbdpeek
 from cld.cloud import connect, safe_list
+from cld.guest import connect_guest, GuestError
+from cld.guestdisk import (boot_ids, root_disk, inspect_disk, plan_disk, show_plan,
+                           apply_plans, confirm_wipe)
 from cld.inventory import server_az
 from cld.steps import current_project
 from cld.ui import (out, header, warn, err, render_table, choose, confirm,
-                    confirm_destructive)
+                    confirm_destructive, Abort)
 from cld.volume import show_capacity, prompt_volume_spec
 
 
@@ -36,10 +44,11 @@ def _resolve_server(conn, project_id, server_arg):
 
 
 def attach_storage(cloud, server_arg=None, size=None, type_name=None,
-                   disk=None, dry_run=False):
+                   disks=None, dry_run=False, integrate=True):
     # --disk attaches an existing volume that already has its own size/type, so
     # combining it with --size/--type is contradictory -- refuse up front.
-    if disk and (size is not None or type_name is not None):
+    disks = list(dict.fromkeys(disks or []))
+    if disks and (size is not None or type_name is not None):
         err("--size/--type cannot be combined with --disk (an existing volume "
             "already has its own size and type).")
         return None
@@ -47,16 +56,17 @@ def attach_storage(cloud, server_arg=None, size=None, type_name=None,
     conn = connect(cloud)
     project_id, _ = current_project(conn)
     audit.audit("attachstorage.start", cloud=cloud, project=project_id,
-                user=getattr(conn, "current_user_id", None), disk=disk)
+                user=getattr(conn, "current_user_id", None),
+                disk=",".join(disks) or None)
 
     server = _resolve_server(conn, project_id, server_arg)
     if server is None:
         return None
     out(f"Target server: [bold]{server.name}[/bold] [dim]({server.id})[/dim]")
 
-    # --disk: attach an EXISTING volume instead of creating a new one.
-    if disk:
-        return _attach_existing(conn, server, disk, dry_run)
+    # --disk: attach EXISTING volumes instead of creating a new one.
+    if disks:
+        return _attach_existing(conn, server, disks, dry_run, integrate)
 
     header("Data volume")
     pool_free, quota_gb = show_capacity(conn, project_id)
@@ -73,6 +83,8 @@ def attach_storage(cloud, server_arg=None, size=None, type_name=None,
     if dry_run:
         out()
         out("[yellow]--dry-run: no volume created or attached.[/yellow]")
+        if integrate:
+            connect_guest(conn, server, ask_ssh=False)
         return None
 
     if not confirm(f"Create and attach a {spec['size']} GB volume to "
@@ -80,7 +92,10 @@ def attach_storage(cloud, server_arg=None, size=None, type_name=None,
         out("Aborted; nothing created.")
         return None
 
-    return _create_and_attach(conn, server, spec)
+    volume = _create_and_attach(conn, server, spec)
+    if volume is not None:
+        _after_attach(conn, server, [volume], integrate)
+    return volume
 
 
 def _attached_servers(conn, volume):
@@ -136,9 +151,9 @@ def _is_image_volume(volume):
 def _print_mount_help(conn, server, volume):
     """Tell the operator how to mount the freshly-attached volume INSIDE the VM.
 
-    The cloud API only exposes the block device; partition/format/mount is
-    guest-side and cld has no in-guest access (no SSH keys, no hypervisor/libvirt).
-    So we print the exact device + safe, copy-pasteable steps instead of guessing.
+    The fallback when cld cannot get into the guest (no guest agent, no SSH) or
+    the operator stopped the in-guest step: the exact device + safe,
+    copy-pasteable steps instead of guessing.
     Every command uses the by-id path: it names THIS volume, where a /dev/vdX
     guess could name another disk -- and mkfs on the wrong one is unrecoverable.
     """
@@ -151,7 +166,7 @@ def _print_mount_help(conn, server, volume):
     out(f"[dim](Nova reports {nova_dev or 'no device name yet'}; the guest's /dev/vdX "
         f"can differ, so use the by-id path -- it is always this volume. If it is "
         f"missing, find it with: ls -l /dev/disk/by-id/ | grep {volume.id[:20]})[/dim]")
-    out("The cloud API can't mount guest filesystems, so do this inside the VM (as root):")
+    out("cld did not set it up inside the VM; do this there (as root):")
     out()
     out("  [dim]# 1. existing partitions/filesystem? (wipefs: no output = blank)[/dim]")
     out(f"  [cyan]lsblk -f {dev}[/cyan]", wrap=False)
@@ -190,78 +205,166 @@ def _warn_boot_label_clash(server):
         "detaching it.")
 
 
-def _attach_existing(conn, server, volume_id, dry_run):
-    """Attach a pre-existing volume to `server`, defensively.
+_ROOT_LABELS = {"cloudimg-rootfs", "uefi", "boot", "efi", "root", "rootfs",
+                "system-boot", "esp"}
 
-    Refuses unless the volume exists, belongs to the same project, and is
-    `available` (unattached/healthy). NEVER creates, modifies, or deletes the
-    volume -- on any failure the volume is left exactly as it was.
-    """
-    header("Attach existing volume")
+
+def _old_root_reasons(volume, peek):
+    """Why this volume looks like an old VM's root disk ([] = it does not)."""
+    why = []
+    if getattr(volume, "is_bootable", False):
+        why.append("Cinder marks it bootable")
+    meta = getattr(volume, "volume_image_metadata", None) or {}
+    if meta:
+        why.append(f"it was made from image '{meta.get('image_name', '?')}'")
+    for r in (peek.get("regions") or []) if peek.get("found") else []:
+        label = ((r.get("fs") or {}).get("label") or "").lower()
+        if label in _ROOT_LABELS:
+            why.append(f"{r['name']} has the boot label '{label}'")
+    return why
+
+
+def _show_peek(peek):
+    if not peek.get("found"):
+        out(f"[dim]contents not inspected: {peek.get('error') or 'no Ceph image'}[/dim]")
+        return
+    rows = []
+    for r in peek.get("regions", []):
+        fs = r.get("fs") or {}
+        rows.append([r["name"], f"{r['size_bytes'] / 1024 ** 3:.1f}G",
+                     fs.get("type", "?"), fs.get("label") or "-",
+                     fs.get("last_mounted_on") or "-"])
+    render_table(f"On the disk now ({peek.get('partition_table') or 'no partition table'};"
+                 " read-only Ceph look)", ["part", "size", "filesystem", "label",
+                                           "last mounted on"], rows)
+
+
+def _validate_existing(conn, server, volume_id):
+    """-> the volume if it may be attached to `server`, else None (with the reason).
+    Refuses unless it exists, is in the same project and is `available` -- or is
+    already attached to `server` alone (then only the in-guest step runs;
+    `volume._cld_attached` marks it)."""
     volume = conn.block_storage.find_volume(volume_id, ignore_missing=True)
     if volume is None:
         err(f"volume '{volume_id}' not found in this project")
         return None
-
-    # --- defensive validation (refuse on any failure) ---
     vproj = getattr(volume, "project_id", None)
     sproj = getattr(server, "project_id", None)
     if vproj and sproj and vproj != sproj:
-        err(f"volume belongs to a different project ({vproj}) than the server "
-            f"({sproj}); cross-project attach is not allowed.")
+        err(f"volume {volume.id} belongs to a different project ({vproj}) than the "
+            f"server ({sproj}); cross-project attach is not allowed.")
         return None
-
     status = getattr(volume, "status", None)
-    attachments = getattr(volume, "attachments", None) or []
-    if attachments or status == "in-use":
-        err(f"volume is already attached to {_attached_servers(conn, volume)}; "
-            f"refusing (status={status}).")
+    atts = getattr(volume, "attachments", None) or []
+    if (status == "in-use" and len(atts) == 1
+            and atts[0].get("server_id") == server.id):
+        out(f"[dim]{volume.id} is already attached to {server.name}: only the "
+            "in-guest step runs for it.[/dim]")
+        volume._cld_attached = True
+        return volume
+    if atts or status == "in-use":
+        err(f"volume {volume.id} is already attached to "
+            f"{_attached_servers(conn, volume)}; refusing (status={status}).")
         return None
     if status != "available":
-        err(f"volume is not available for attach (status={status}); refusing.")
+        err(f"volume {volume.id} is not available for attach (status={status}); "
+            "refusing.")
+        return None
+    return volume
+
+
+def _attach_existing(conn, server, volume_ids, dry_run, integrate=True):
+    """Attach pre-existing volumes to `server`, defensively, then integrate them.
+
+    Each volume must exist, be in the same project and `available`. An old root
+    disk (bootable / from an image / boot labels on it) is attached only if cld
+    can get into the guest AND the operator typed its ID to agree that it is
+    wiped right after; otherwise it is not attached at all. cld never deletes a
+    pre-existing volume; on an attach failure it is left as it was.
+    """
+    header("Attach existing volume(s)")
+    vols = [v for v in (_validate_existing(conn, server, i) for i in volume_ids) if v]
+    if not vols:
         return None
 
-    # --- non-blocking warnings ---
-    if getattr(volume, "is_bootable", False):
-        warn("this volume is bootable -- it may be a root/image volume rather "
-             "than a spare data disk. Its cloud-image filesystem labels can make "
-             f"{server.name} boot from it after a reboot (details after attach).")
-    vaz = getattr(volume, "availability_zone", None)
+    guest = connect_guest(conn, server, ask_ssh=not dry_run) if integrate else None
+    wipe_ids, keep = set(), []
     saz = server_az(server)
-    if vaz and saz and vaz != saz:
-        warn(f"volume AZ '{vaz}' differs from server AZ '{saz}'; Nova may reject "
-             "the attach.")
+    for v in vols:
+        vname = getattr(v, "name", "") or "(unnamed)"
+        header(f"{vname} ({v.id}, {getattr(v, 'size', '?')} GB)")
+        peek = rbdpeek.peek(v.id)
+        _show_peek(peek)
+        vaz = getattr(v, "availability_zone", None)
+        if vaz and saz and vaz != saz:
+            out(f"[dim]volume AZ '{vaz}', server AZ '{saz}': fine unless Nova's "
+                "cinder.cross_az_attach is off (it is not on rc3).[/dim]")
+        why = _old_root_reasons(v, peek)
+        if why:
+            warn(f"old root disk: {'; '.join(why)}. Its cloud-image labels can make "
+                 f"{server.name} boot from it, so cld attaches it only to wipe it.")
+            if not integrate or guest is None:
+                if getattr(v, "_cld_attached", False):
+                    err(f"it is attached and cld cannot get into the guest to wipe it. "
+                        f"Do not reboot {server.name} before checking "
+                        "`ls -l /dev/disk/by-label/` inside it, or detach it.")
+                else:
+                    err("no way into the guest to wipe it right after the attach; "
+                        "not attaching this disk.")
+                continue
+            if dry_run:
+                out("[yellow]--dry-run: a real run asks you to type its ID to agree "
+                    "to wipe it.[/yellow]")
+            elif not confirm_wipe(v, "It will be wiped inside the VM right after "
+                                     "the attach, then laid out as you choose."):
+                if getattr(v, "_cld_attached", False):
+                    warn(f"leaving {v.id} attached and untouched. Before rebooting "
+                         f"{server.name}, check `ls -l /dev/disk/by-label/` inside it "
+                         "points only at its own disk, or detach this volume.")
+                else:
+                    out(f"Not attaching {v.id}.")
+                continue
+            wipe_ids.add(v.id)
+        keep.append(v)
+    if not keep:
+        out("Nothing to attach.")
+        return None
 
-    vname = getattr(volume, "name", "") or "(unnamed)"
-    render_table("Existing volume to attach", ["field", "value"],
-                 [["volume", f"{vname} ({volume.id})"],
-                  ["size", f"{getattr(volume, 'size', '?')} GB"],
-                  ["status", status],
-                  ["bootable", "yes" if getattr(volume, "is_bootable", False)
-                   else "no"],
-                  ["AZ", vaz or "-"],
-                  ["-> server", f"{server.name} ({server.id})"]])
-
+    render_table("Volumes", ["volume", "size", "old root disk", "attach"],
+                 [[f"{getattr(v, 'name', '') or '(unnamed)'} ({v.id})",
+                   f"{getattr(v, 'size', '?')} GB",
+                   "yes: wiped in the guest" if v.id in wipe_ids else "no",
+                   "already attached" if getattr(v, "_cld_attached", False)
+                   else f"-> {server.name}"] for v in keep])
     if dry_run:
         out()
-        out("[yellow]--dry-run: no volume attached.[/yellow]")
+        out("[yellow]--dry-run: nothing attached, nothing changed in the guest.[/yellow]")
+        if integrate and guest is None:
+            out("[dim]No guest access found: a real run would offer SSH, or print the "
+                "manual steps.[/dim]")
         return None
 
-    if getattr(volume, "is_bootable", False):
-        if not confirm("This volume is bootable. Attach it anyway?",
-                       default=False):
-            out("Aborted; nothing attached.")
-            return None
-    if not confirm(f"Attach existing volume {volume.id} to {server.name}?",
-                   default=False):
+    new = [v for v in keep if not getattr(v, "_cld_attached", False)]
+    if new and not confirm(f"Attach {len(new)} volume(s) to {server.name}?",
+                           default=False):
         out("Aborted; nothing attached.")
         return None
+    attached = [v for v in keep
+                if getattr(v, "_cld_attached", False) or _attach_one(conn, server, v)]
+    if not attached:
+        return None
+    _after_attach(conn, server, attached, integrate, guest, wipe_ids)
+    return attached
 
+
+def _attach_one(conn, server, volume):
+    """One Nova attach. -> True on success; on failure report VERIFIED state."""
     try:
-        out("[bold]Attaching volume...[/bold]")
+        out(f"[bold]Attaching {volume.id}...[/bold]")
         conn.compute.create_volume_attachment(server, volume_id=volume.id)
         out(f"[green]Attached volume:[/green] {volume.id} -> {server.name}")
         audit.audit("volume.attach", id=volume.id, server=server.id, existing=True)
+        return True
     except Exception as e:  # noqa: BLE001
         err(f"attach failed: {e}")
         fresh = None
@@ -275,13 +378,51 @@ def _attach_existing(conn, server, volume_id, dry_run):
         # The guarantee cld can actually make. What Nova did to the volume is
         # reported by _recheck_volume above, from a real Cinder read.
         warn("cld did not create, modify, or delete this volume.")
-        return None
+        return False
 
-    out()
-    out(f"[bold green]Done.[/bold green] Volume {volume.id} attached to "
-        f"{server.name}")
-    _print_mount_help(conn, server, volume)
-    return volume
+
+def _after_attach(conn, server, volumes, integrate, guest=None, wipe_ids=()):
+    """In-guest half: integrate the attached volumes, or print the manual steps.
+    Anything left undone on a disk that must be wiped is reported loudly."""
+    done = False
+    if integrate:
+        if guest is None:
+            guest = connect_guest(conn, server)
+        if guest is not None:
+            done = _integrate(server, guest, volumes, set(wipe_ids))
+    if not done:
+        for v in volumes:
+            _print_mount_help(conn, server, v)
+        for v in volumes:
+            if v.id in wipe_ids:
+                err(f"{v.id} is an old root disk and was NOT wiped. Do NOT reboot "
+                    f"{server.name}; detach it first:")
+                out(f"  openstack server remove volume {server.id} {v.id}", wrap=False)
+
+
+def _integrate(server, g, volumes, wipe_ids):
+    """Inspect -> interview -> apply inside the guest. -> True when every disk
+    was handled (or deliberately left alone without a pending wipe)."""
+    try:
+        protected, rootdev = boot_ids(g), root_disk(g)
+        taken, plans = set(), []
+        for v in volumes:
+            info = inspect_disk(g, v.id, protected, rootdev)
+            p = plan_disk(g, info, v, v.id in wipe_ids, server, taken)
+            if p:
+                plans.append(p)
+            elif v.id in wipe_ids:
+                return False
+        if not plans:
+            return True
+        show_plan(plans, server, g)
+        return apply_plans(g, server, plans, protected, rootdev)
+    except Abort:
+        warn("stopped; the disk(s) stay attached, nothing more changed in the guest.")
+        return False
+    except GuestError as e:
+        err(f"lost access to the guest ({e}); nothing more changed in the guest.")
+        return False
 
 
 # Markers matched case-insensitively against str(e). We only ever see the client
@@ -449,7 +590,6 @@ def _create_and_attach(conn, server, spec):
     out()
     out(f"[bold green]Done.[/bold green] Volume {volume.id} attached to "
         f"{server.name}")
-    _print_mount_help(conn, server, volume)
     return volume
 
 

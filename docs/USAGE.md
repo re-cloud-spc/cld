@@ -144,8 +144,8 @@ python3 cld.py createvm --non-interactive myvm.yaml
 Flow: **cloud (project) → availability zone → flavor → compute host (optional pin) → image → network/subnet →
 security → data disks (optional, planned only) → name → confirm → create** (then an
 optional floating IP). When the VM is ACTIVE, `cld` prints one exact
-`attachstorage --disk` command per planned disk, or the generic `attachstorage`
-command if none were planned.
+`attachstorage --disk ... --disk ...` command for the planned disks (it attaches and
+sets them up inside the VM), or the generic `attachstorage` command if none were planned.
 
 ## 5. Add a data volume (`cld attachstorage`)
 
@@ -156,8 +156,8 @@ python3 cld.py attachstorage --cloud admin
 # Target a specific server, size and type inline:
 python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --size 50 --type encrypted
 
-# Attach an EXISTING volume by ID (instead of creating one):
-python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --disk dedf1d0a-...
+# Attach EXISTING volumes (instead of creating one), then set them up inside the VM:
+python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --disk dedf1d0a-... --disk 7c2e19b4-...
 
 # See what would happen without creating/attaching anything:
 python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --size 50 --dry-run
@@ -167,7 +167,8 @@ python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --size 50 --d
 |------|--------|
 | `--cloud NAME` | cloud (= project) the server lives in |
 | `--serverid ID` | target server ID (otherwise lists the project's servers to pick) |
-| `--disk VOLUME_ID` | attach an existing volume by ID instead of creating one; attaches only if it's `available`, unattached and in this project, and never alters the volume on failure; a bootable volume needs an extra yes and triggers the boot-label warning |
+| `--disk VOLUME_ID` | attach an EXISTING volume instead of creating one; repeat for several. Only if it's `available`, unattached and in this project (one already attached to *this* server gets the in-guest step only). An old root disk is attached only to be wiped, after you type its ID |
+| `--attach-only` | attach only; skip the in-guest step and print the manual mount steps |
 | `--size GB` | volume size for a new volume (not allowed with `--disk`) |
 | `--type TYPE` | volume type, e.g. an encrypted/LUKS type (not allowed with `--disk`) |
 | `--dry-run` | show what would be created/attached, change nothing |
@@ -177,12 +178,51 @@ allocated / over-subscription) and your project's volume quota vs usage, and
 validates the size against both. The disk model: a VM boots onto the flavor's small
 Ceph root disk; extra capacity comes from these attached Cinder (Ceph RBD) volumes.
 
-### Mounting the attached volume
+### Inside the VM: partition, format, mount
 
-Attaching only adds a **block device** to the VM — it is **not mounted**. The
-OpenStack API cannot mount a guest filesystem, and `cld` has no in-guest access (it
-holds no SSH private keys and no hypervisor/libvirt access), so after a successful
-attach it prints the device and the steps to run **inside the VM** (as root).
+After the attach, `cld` goes **into the VM** and sets the disk up with you:
+
+1. **Access.** First the **qemu-guest-agent**, reached over SSH through the compute
+   node that hosts the VM (`docker exec nova_libvirt virsh qemu-agent-command`). This
+   needs your SSH key on that compute node and a running agent in the guest, but no
+   key inside the VM and no network route to it. If that fails, `cld` asks for an
+   **SSH target** (`user@address`, passwordless sudo). If neither works, it prints
+   the manual steps below. Today rc3-c-1 and rc3-c-2 work; rc3-c-3 does not accept
+   the key.
+2. **Find the disk by its serial**, `/dev/disk/by-id/virtio-<first 20 chars of the
+   volume ID>`, never by Nova's `/dev/vdX` guess. It is classified as *blank*, *has
+   data*, *boot clash* (shares a label/UUID the VM boots by), *mounted* or *root*.
+   Mounted and root disks are never touched.
+3. **Interview**, nothing changed yet:
+   - **blank or to be wiped**: use the **whole disk** (one filesystem, no partition
+     table) or **split it** (GPT; you give each partition's size, the last one gets
+     the rest). Then, for each filesystem: ext4 or xfs, mount point (under `/mnt`,
+     `/srv`, `/data` or `/opt`; must be free and empty), who may write (root, everyone
+     with sticky `1777`, or one user), and fstab yes/no.
+   - **has data**: keep it and choose which partition mounts where (**read-only by
+     default**), wipe it (type its ID), or leave it unmounted.
+4. **Plan and apply.** It shows the plan, re-checks everything (same device, not
+   mounted, still blank, mount points still free) and asks **"Apply this plan?"
+   (default No)**. Then it wipes / partitions / formats / mounts. fstab is backed up to
+   `/etc/fstab.bak-cld-<time>`, only **appended to** (by-id path + `nofail`, never
+   `UUID=`, since cloned volumes share UUIDs), and checked with `findmnt --verify`; a
+   failed check restores the backup. Every step is written to the audit log
+   (`guest.*`).
+
+**Old root disks are wiped, never reused as they are.** A bootable or image-derived
+volume, or one whose partitions carry boot labels (`cloudimg-rootfs`, `UEFI`, `BOOT`,
+...), can make the VM boot from it after a reboot: udev points
+`/dev/disk/by-label/*` at whichever disk it saw last. Before attaching one, `cld` shows
+what is on it (a read-only Ceph look) and attaches it **only after you type its ID** to
+agree that it is wiped right after. Say no and it is not attached. Without guest access
+it is never attached. If the wipe does not happen after all, `cld` says so and prints
+the detach command: don't reboot until it is detached or wiped.
+
+### Mounting by hand (no guest access, or `--attach-only`)
+
+If `cld` cannot get into the guest, or you pass `--attach-only`, the disk is only a
+**block device** in the VM: nothing is mounted. `cld` then prints the device and the
+steps to run **inside the VM** (as root).
 
 The device is printed as its **exact, stable path**
 `/dev/disk/by-id/virtio-<first 20 chars of the volume ID>`. Nova sets the virtio disk
@@ -207,15 +247,9 @@ the same image share filesystem UUIDs. `nofail` keeps a later detach from blocki
 > Only run `mkfs` if the disk is blank — a re-attached data volume already has a
 > filesystem and must **not** be reformatted.
 
-**Image/root volumes can hijack the boot.** A bootable or image-derived volume (an
-old VM's root disk) carries the cloud image's filesystem labels `cloudimg-rootfs` /
-`UEFI` / `BOOT`. Ubuntu cloud guests boot and mount by exactly those labels
-(`root=LABEL=cloudimg-rootfs`, fstab `LABEL=UEFI` / `LABEL=BOOT`), and udev points
-`/dev/disk/by-label/*` at whichever disk it saw last. So after attaching one, the VM's
-**next reboot can come up on the attached disk's root filesystem**. `cld` can't read
-guest labels, so it warns on every image volume: before the attach, and again in the
-mount help. Don't reboot until `ls -l /dev/disk/by-label/` points only at the VM's own
-disk. Get there by reformatting the volume (if its data is disposable) or by detaching it.
+**Image/root volumes can hijack the boot**, see above. Attached by hand, don't reboot
+until `ls -l /dev/disk/by-label/` points only at the VM's own disk: reformat the volume
+(if its data is disposable) or detach it.
 
 ## 5b. Delete an unattached volume (`cld deletevolume`)
 
@@ -288,10 +322,10 @@ skipped, skipping is Enter only (it has no number). `q` or Ctrl-D quits.
   name, size, bootable flag, AZ and created date. Pick by the `#`
   (e.g. `0,2`; Enter = none). A bootable / image volume (likely an old root disk,
   whose `cloudimg-rootfs`/`UEFI`/`BOOT` labels can hijack the new VM's boot) needs an
-  explicit yes each, default No. **Nothing is attached by `createvm`**: the disks are
+  explicit yes each, default No, and `attachstorage` will wipe it. **Nothing is attached by `createvm`**: the disks are
   saved in the spec, and once the VM is ACTIVE (or in `--dry-run`) each is re-read
-  and gets one `cld attachstorage --serverid <vm> --disk <full-uuid>` line; a disk
-  that is no longer available, or belongs to another project, gets no line.
+  and the disks still attachable get one `cld attachstorage --serverid <vm> --disk <uuid> --disk ...`
+  command; a disk that is no longer available, or belongs to another project, is left out.
 - **Network / subnet** — every usable network and its subnets with CIDR, gateway,
   and port count; external (publicly exposed) networks are flagged. The wizard then
   **assigns the next available static internal IP** for the chosen subnet (lowest

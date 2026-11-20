@@ -141,8 +141,8 @@ python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-...
 # Non-interactive volume add:
 python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --size 50 --type encrypted
 
-# Attach an EXISTING volume by ID (instead of creating one):
-python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --disk dedf1d0a-...
+# Attach EXISTING volumes (instead of creating one), then set them up inside the VM:
+python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --disk dedf1d0a-... --disk 7c2e19b4-...
 ```
 
 ### `createvm` flags
@@ -161,18 +161,21 @@ python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --disk dedf1d
 |------|--------|
 | `--cloud NAME` | cloud (= project) the server lives in |
 | `--serverid ID` | target server ID (otherwise lists the project's servers to pick) |
-| `--disk VOLUME_ID` | attach an existing volume by ID instead of creating one; attaches only if it's `available`, unattached and in this project (never alters the volume on failure); a bootable volume needs an extra yes and triggers the boot-label warning |
+| `--disk VOLUME_ID` | attach an EXISTING volume instead of creating one; repeat for several. Only if it's `available`, unattached and in this project (one already attached to *this* server gets the in-guest step only). An old root disk is attached only to be wiped, after you type its ID |
+| `--attach-only` | attach only; skip the in-guest step and print the manual mount steps |
 | `--size GB` | volume size for a new volume (not allowed with `--disk`) |
 | `--type TYPE` | volume type, e.g. an encrypted/LUKS type (not allowed with `--disk`) |
 | `--dry-run` | show what would be created/attached, change nothing |
 
-Attaching only adds a **block device** to the VM — it is **not mounted**. The cloud
-API can't mount a guest filesystem and `cld` has no in-guest access (no SSH keys, no
-hypervisor/libvirt), so after a successful attach it prints the device's exact path
-(`/dev/disk/by-id/virtio-<volume-id[:20]>`; Nova's `/dev/vdX` can differ in the guest)
-and the `lsblk`/`mkfs` (blank disks only)/`mount`/`fstab` steps to run inside the VM.
-Attaching a bootable/image volume triggers a warning: its cloud-image labels can make
-the VM boot from it after a reboot. See [docs/USAGE.md](docs/USAGE.md#mounting-the-attached-volume).
+After the attach, `cld` goes **into the VM** (qemu-guest-agent via the compute node,
+or SSH as a fallback), finds the disk by its serial and asks you how to lay it out:
+whole disk or split into partitions, filesystem, mount point and writers for each,
+fstab. For a disk with data: which partition mounts where (read-only by default), wipe,
+or leave it. It shows the plan and asks (default No) before changing anything; fstab is
+backed up, only appended to and verified. **Old root disks** (bootable, from an image,
+or with boot labels) are attached only to be **wiped**, after you type the volume ID.
+Without guest access it prints the manual steps. See
+[docs/USAGE.md](docs/USAGE.md#inside-the-vm-partition-format-mount).
 
 ## Delete an unattached volume (`cld deletevolume`)
 
@@ -273,10 +276,10 @@ skipped, skipping is Enter only (it has no number). `q` or Ctrl-D quits.
   name, size, bootable flag, AZ and created date. Pick by the `#`
   (e.g. `0,2`; Enter = none). A bootable / image volume (likely an old root disk,
   whose `cloudimg-rootfs`/`UEFI`/`BOOT` labels can hijack the new VM's boot) needs an
-  explicit yes each, default No. **Nothing is attached by `createvm`**: the disks are
+  explicit yes each, default No, and `attachstorage` will wipe it. **Nothing is attached by `createvm`**: the disks are
   saved in the spec, and once the VM is ACTIVE (or in `--dry-run`) each is re-read
-  and gets one `cld attachstorage --serverid <vm> --disk <full-uuid>` line; a disk
-  that is no longer available, or belongs to another project, gets no line.
+  and the disks still attachable get one `cld attachstorage --serverid <vm> --disk <uuid> --disk ...`
+  command; a disk that is no longer available, or belongs to another project, is left out.
 - **Data volume** (`attachstorage`) — true SDS capacity from Cinder pool stats
   (total / free / allocated / over-subscription) **and** the project's volume quota
   vs usage. The requested size is validated against both.
