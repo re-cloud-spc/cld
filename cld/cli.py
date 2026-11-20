@@ -90,17 +90,18 @@ examples:
 
 
 _CREATE_EPILOG = """\
-wizard questions (Enter = default; q or Ctrl-D quits, creates nothing):
+wizard questions (Enter = default; q or Ctrl-D quits, creates nothing;
+menus number from 0):
    1. cloud (project): only if no --cloud and >1 clouds.yaml entry
    2. availability zone: only if >1 AZ; Enter lets the scheduler decide
    3. flavor: required; one that cannot boot needs an extra yes
    4. compute host: only hosts with room; Enter = scheduler decides
    5. image: required
    6. network/subnet: required; an external network needs an extra yes
-   7. SSH keypairs: several allowed (e.g. 1,3); Enter = none (risky)
+   7. SSH keypairs: several allowed (e.g. 0,2); Enter = none (risky)
    8. security groups: repeat, Enter ends; world-open groups need a yes
    9. floating IP: default No; a yes needs a second confirmation
-  10. data disks: available ones, by # (0-based); bootable need a yes
+  10. data disks: available ones, by #; bootable ones need a yes
   11. VM name: required, free text
   12. Create this VM now?: default No; skipped with --dry-run
   Disks are never attached by createvm: once the VM is ACTIVE it prints

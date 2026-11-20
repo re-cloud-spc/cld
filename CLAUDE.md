@@ -126,7 +126,7 @@ hosts.py      per-compute-host capacity from Placement (host_capacity/host_fit/r
               + the optional createvm host picker (select_host). Read-only.
 completion.py `cld completion bash`: completion script generated from the argparse parser;
               --cloud names parsed by awk at TAB time (names only, never values).
-disks.py      createvm "data disks" step: select available project volumes (zero-based #,
+disks.py      createvm "data disks" step: select available project volumes (# as every menu,
               short IDs, bootable needs a yes), re-read them (recheck_disks) and print
               full-UUID `attachstorage --disk` lines. Read-only; never attaches.
 init.py       credential bootstrap (connect_admin, ensure_admin_role, merge_clouds_entry)
@@ -241,6 +241,9 @@ confirm a `logs/cld-*.log` line appears for each invocation.
   quitting at "Delete the volume that failed to attach?" keeps the resource. Use
   `confirm_destructive` — not `confirm` — for every delete/rollback question, and add new
   prompts via the `ui` helpers rather than bare `input()`.
+  Every menu is **zero-based** (`0` = first item; multi-select `0,2`, kept in
+  typed order). A none/skip option has no number -- it is **Enter only** -- so no
+  digit means "skip" in one menu and "pick" in another.
 
 - **Flavors are preflighted for unsatisfiable NUMA/hugepage extra specs.**
   `steps._flavor_topology()` returns `(note, blocker)`: `hw:numa_nodes=N` that does not
