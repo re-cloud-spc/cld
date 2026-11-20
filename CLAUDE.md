@@ -129,7 +129,10 @@ guest.py      shell access INTO a VM: AgentGuest (qemu-guest-agent through the c
 guestdisk.py  in-guest disk setup: inspect_disk (READ-ONLY; by virtio serial; verdict
               blank/has-data/clash/mounted/root/missing vs boot_ids()), plan_disk
               (interview: whole disk or GPT split, ext4/xfs, mount point, writers,
-              fstab; keep-data mounts default ro), apply_plans (re-check, confirm
+              fstab; keep-data mounts default ro; or move an existing folder
+              onto it: _MOVE_RE allowlist, _users = nothing may use it, copy +
+              compare, rename to <folder>.cld-old-<time>, mount; /tmp only at
+              the next reboot), apply_plans (re-check, confirm
               default No, wipe/sfdisk/mkfs/mount, fstab backup+append+findmnt --verify
               with restore, audit guest.* per step).
 deletevol.py  delete_volume(): the only delete of a pre-existing resource. Hard refusals
@@ -310,8 +313,12 @@ confirm a `logs/cld-*.log` line appears for each invocation.
   disks are found only by virtio serial; never the root disk or a mounted disk;
   nothing with data is formatted without the typed ID (confirm_wipe, quitting =
   keep); fstab is only appended to (by-id + nofail, never UUID=/LABEL=), backed up
-  and verified, restored on failure; mount points only under /mnt /srv /data /opt,
-  free and empty; never grub/kernel cmdline/the VM's own disk; one `audit` line per
+  and verified, restored on failure; new mount points only under /mnt /srv /data
+  /opt, free and empty; a moved folder (`_MOVE_RE`: /home/<user>, /var/log,
+  /var/lib/<name>, /var/www, /srv /opt /data subfolders, /tmp) only when no process
+  uses it, copied and compared before the switch, the old copy renamed and NEVER
+  deleted by cld, never all of /var; never grub/kernel cmdline/the VM's own disk;
+  one `audit` line per
   in-guest step (`guest.*`). An old root disk is never attached without both guest
   access and wipe consent, because a reboot could boot from it. `Abort` inside the
   in-guest step is caught in `storage._integrate` (the disk IS attached, so the
