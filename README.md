@@ -153,6 +153,7 @@ python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --disk dedf1d
 | `--dry-run` | walk every step, print the create payload, change nothing |
 | `--save-answers FILE` | write this run's spec to a YAML file |
 | `--non-interactive FILE` | replay a saved spec with no prompts |
+| `--host HOST` | pin to this compute host (admin) without the AZ / host questions; an unknown or down host stops before any question, a flavor that doesn't fit needs a yes (default No); overrides a saved spec's host |
 
 ### `attachstorage` flags
 

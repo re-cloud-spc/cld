@@ -117,6 +117,12 @@ compute host (admin; shown after the flavor):
   is no round-robin placement. See the same table any time with
   `cld list hosts`.
 
+--host HOST:
+  pins without the menu and skips the AZ question (the host's AZ is
+  used). An unknown or down host stops before any question. If the
+  flavor does not fit the host, a dry run only warns; a real run asks
+  "Proceed anyway?" (default No). Overrides the host of a saved spec.
+
 --non-interactive FILE:
   re-checks the saved flavor and the saved host against current capacity.
   If the host no longer fits, a dry run only warns; a real run asks
@@ -126,6 +132,7 @@ examples:
   cld list hosts --cloud admin                      # where is there room?
   cld createvm --cloud <project> --dry-run          # walk it, create nothing
   cld createvm --cloud <project> --save-answers vm.yaml
+  cld createvm --cloud admin --host rc3-c-3 --dry-run
   cld createvm --non-interactive vm.yaml --dry-run
 """
 
@@ -200,6 +207,10 @@ def build_parser():
                           help="save the collected spec to FILE for later replay")
     p_create.add_argument("--non-interactive", metavar="FILE",
                           help="replay a previously saved spec file")
+    p_create.add_argument("--host", metavar="HOST",
+                          help="pin to this compute host (admin; e.g. rc3-c-3): "
+                               "skips the AZ and host questions; checked "
+                               "against Placement first")
 
     p_attach = sub.add_parser(
         "attachstorage", help="create + attach a data volume to an existing server",
@@ -279,17 +290,25 @@ def build_parser():
 # --------------------------------------------------------------------------- #
 # createvm orchestration
 # --------------------------------------------------------------------------- #
-def run_interactive(cloud):
+def run_interactive(cloud, host=None, dry_run=False):
     conn = connect(cloud)
     project_id, project_name = current_project(conn)
 
     inv = Inventory(conn)
-    az = select_az(conn, inv)
+    if host:
+        az = _resolve_host(conn, inv, host)["az"]
+        out(f"Pinned by --host: [bold]{host}[/bold] (AZ {az or 'unknown'})")
+    else:
+        az = select_az(conn, inv)
     flavor = select_flavor(conn, inv)
     if not flavor:
         err("a flavor is required")
         sys.exit(1)
-    host = select_host(conn, inv, flavor, az)
+    if host:
+        if not _host_fits(conn, inv, host, flavor, dry_run):
+            raise Abort()
+    else:
+        host = select_host(conn, inv, flavor, az)
     image = select_image(conn, inv)
     if not image:
         err("an image is required")
@@ -318,6 +337,41 @@ def run_interactive(cloud):
         "disks": disks,
     }
     return conn, spec
+
+
+def _resolve_host(conn, inv, host):
+    """--host: the host's Placement row, or exit 1 before any question.
+
+    Only a known, up compute host is accepted; there is no "pin anyway" for a
+    name Placement does not know. -> row, with "az" None when it is unknown.
+    """
+    rows = host_capacity(conn, inv)
+    if not rows:
+        err("--host needs per-host data from Placement (the admin role)")
+        sys.exit(1)
+    row = next((r for r in rows if r["host"] == host), None)
+    if row is None:
+        err(f"--host {host}: not a compute host here; known: "
+            f"{', '.join(r['host'] for r in rows)}")
+        sys.exit(1)
+    if row["state"] != "up":
+        err(f"--host {host}: nova-compute is {row['state']}")
+        sys.exit(1)
+    return dict(row, az=None if row["az"] == "?" else row["az"])
+
+
+def _host_fits(conn, inv, host, flavor, dry_run):
+    """Placement check of the --host pin for this flavor. -> True to go on.
+    Same gate as a saved host: a dry run only warns, a real run defaults No."""
+    row = next((r for r in host_capacity(conn, inv) if r["host"] == host), None)
+    reason = host_fit(row, flavor) if row else "no longer listed by Placement"
+    if not reason:
+        return True
+    warn(f"--host {host} has no room for '{flavor.name}': {reason}. Nova "
+         "would refuse it with 'No valid host'.")
+    if dry_run:
+        return True
+    return confirm("Proceed anyway?", default=False)
 
 
 def _check_saved_flavor(conn, spec, dry_run):
@@ -375,11 +429,19 @@ def _check_saved_host(conn, spec, dry_run):
 
 def cmd_createvm(args):
     cloud = select_cloud(args.cloud)
-    audit.audit("createvm.start", cloud=cloud, dry_run=args.dry_run)
+    audit.audit("createvm.start", cloud=cloud, dry_run=args.dry_run,
+                host=args.host)
     if args.non_interactive:
         spec = load_answers(args.non_interactive)
         spec.setdefault("cloud", cloud)
         conn = connect(cloud)
+        if args.host:
+            az = _resolve_host(conn, None, args.host)["az"]
+            if spec.get("host") != args.host or spec.get("az") != az:
+                out(f"--host overrides the saved placement: host "
+                    f"{spec.get('host') or '(scheduler)'} -> {args.host}, "
+                    f"AZ {spec.get('az') or '(scheduler)'} -> {az or '(scheduler)'}")
+            spec["host"], spec["az"] = args.host, az
         # This path skips select_flavor, so a saved spec pinned to a flavor with
         # unsatisfiable NUMA specs would hit the same create-time 400. Same
         # check, same default-to-No gate.
@@ -388,7 +450,7 @@ def cmd_createvm(args):
             out("Aborted; nothing created.")
             return 0
     else:
-        conn, spec = run_interactive(cloud)
+        conn, spec = run_interactive(cloud, args.host, args.dry_run)
 
     print_summary(spec)
 
