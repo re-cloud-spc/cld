@@ -15,6 +15,7 @@ Subcommands:
 | `cld createvm` | provision a VM (root disk only) |
 | `cld attachstorage` | create + attach a data volume to an **existing** server |
 | `cld check` | authenticate and print the scoped project/user |
+| `cld completion` | print a bash completion script (see §9) |
 
 Run as `python3 cld.py <subcommand>` (or `python3 -m cld <subcommand>`). A bare
 invocation defaults to `createvm`.
@@ -344,6 +345,11 @@ confirmed gone (or reports `error_deleting`). Any backups remain.
   `openstack keypair create <name> > <name>.pem`.
 
 ## 9. Notes / limitations
+
+- **Shell completion (bash):** `python3 cld.py completion bash > ~/.local/share/cld/completion.bash`,
+  then `source` that file from `~/.bashrc`. It completes subcommands, flags, `list`
+  resources, `--available`, `--cloud` names and file paths, for `cld`, `./cld.py`,
+  `python3 cld.py` and `python3 -m cld`. Regenerate it after a cld update that adds flags.
 
 - The VM boots from the image onto the flavor's small Ceph/RBD root disk; extra
   capacity comes from `attachstorage` volumes, not the root disk.
