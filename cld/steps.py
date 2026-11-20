@@ -398,6 +398,40 @@ def _rule_is_world_open(rule):
     return remote in ("0.0.0.0/0", "::/0")
 
 
+def _world_open_ports(sg):
+    """Sorted port labels of `sg`'s ingress rules open to anywhere ([] if none)."""
+    return sorted({str(r.get("port_range_min") or "all")
+                   for r in (sg.security_group_rules or [])
+                   if _rule_is_world_open(r)})
+
+
+def _accept_default_sg(sgs, project_id):
+    """No SG was picked, so Nova applies the project's own 'default' group.
+    Describe what THAT group actually allows. -> True to go on, False to pick again.
+
+    The 'default' group's rules are editable per project (rc3's admin one is
+    world-open), so this reads them instead of assuming the stock rules. A
+    world-open default gets the same explicit yes as picking a world-open group
+    by hand -- otherwise skipping the menu would bypass that check.
+    """
+    from cld.ui import confirm
+    default = next((s for s in sgs if s.name == "default"
+                    and getattr(s, "project_id", None) == project_id), None)
+    if default is None:
+        warn("No security group selected; the project's 'default' group will "
+             "apply, and its rules could not be read -- check them before "
+             "relying on it.")
+        return True
+    ports = _world_open_ports(default)
+    if not ports:
+        out("[dim]No security group selected; the project's 'default' group "
+            "applies. It has no ingress open to anywhere.[/dim]")
+        return True
+    warn("No security group selected; the project's 'default' group applies, "
+         f"and it allows ingress from anywhere (0.0.0.0/0): {', '.join(ports)}.")
+    return confirm("Use the world-open 'default' group?", default=False)
+
+
 def security_review(conn, project_id=None):
     from cld.ui import confirm
     header("Security")
@@ -433,36 +467,31 @@ def security_review(conn, project_id=None):
                if getattr(s, "project_id", None) in (project_id, None)]
     rows = []
     for sg in sgs:
-        open_rules = [r for r in (sg.security_group_rules or [])
-                      if _rule_is_world_open(r)]
-        flag = ""
-        if open_rules:
-            ports = sorted({str(r.get("port_range_min") or "all")
-                            for r in open_rules})
-            flag = f"world-open ingress: {', '.join(ports)}"
+        ports = _world_open_ports(sg)
+        flag = f"world-open ingress: {', '.join(ports)}" if ports else ""
         rows.append([sg.name, len(sg.security_group_rules or []), flag])
     render_table("Security groups", ["name", "#rules", "warning"], rows)
 
     chosen_sgs = []
-    if sgs:
-        while True:
-            sg = choose("Add a security group (repeat; skip to finish)", sgs,
-                        label=lambda s: s.name, allow_none=True,
-                        none_label="(done adding)")
-            if sg is None:
-                break
-            if any(_rule_is_world_open(r) for r in (sg.security_group_rules or [])):
-                warn(f"'{sg.name}' allows ingress from anywhere (0.0.0.0/0).")
-                if not confirm("Add it anyway?", default=False):
-                    continue
-            if sg.name not in chosen_sgs:
-                chosen_sgs.append(sg.name)
-            else:
-                out(f"[dim]'{sg.name}' already selected[/dim]")
-            out(f"[dim]selected: {', '.join(chosen_sgs)}[/dim]")
-    if not chosen_sgs:
-        warn("No security group selected; the project 'default' SG will apply "
-             "(allows all intra-group traffic, blocks external ingress).")
+    while True:
+        if sgs:
+            while True:
+                sg = choose("Add a security group (repeat; skip to finish)", sgs,
+                            label=lambda s: s.name, allow_none=True,
+                            none_label="(done adding)")
+                if sg is None:
+                    break
+                if _world_open_ports(sg):
+                    warn(f"'{sg.name}' allows ingress from anywhere (0.0.0.0/0).")
+                    if not confirm("Add it anyway?", default=False):
+                        continue
+                if sg.name not in chosen_sgs:
+                    chosen_sgs.append(sg.name)
+                else:
+                    out(f"[dim]'{sg.name}' already selected[/dim]")
+                out(f"[dim]selected: {', '.join(chosen_sgs)}[/dim]")
+        if chosen_sgs or _accept_default_sg(sgs, project_id):
+            break
 
     # Floating IP
     floating = confirm("Assign a floating (public) IP after boot?",
