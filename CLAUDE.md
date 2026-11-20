@@ -152,7 +152,7 @@ python3 cld.py attachstorage --cloud <name> --serverid <id> --dry-run  # plan on
 python3 cld.py deletevolume --cloud <name> --volumeid <uuid> --dry-run  # report only
 
 # Writes to the cluster — human-initiated only:
-python3 cld.py createvm --cloud <name> [--save-answers f.yaml]
+python3 cld.py createvm --cloud <name> [--host <compute-host>] [--save-answers f.yaml]
 python3 cld.py createvm --non-interactive f.yaml
 python3 cld.py attachstorage --cloud <name> --serverid <id> [--size GB] [--type T]
 python3 cld.py deletevolume --cloud <name> --volumeid <uuid>
@@ -274,6 +274,9 @@ confirm a `logs/cld-*.log` line appears for each invocation.
   `create_server(host=...)` silently drops it. Do **not** switch to the old
   `az:host` forced-host syntax: it skips the scheduler filters. No round-robin
   placement: the RAM weigher already spreads, and these hosts differ in size.
+  `createvm --host` takes the same path without the menu (`cli._resolve_host`:
+  unknown/down host = exit before any question; no-fit = `confirm(default=False)`)
+  and sets the AZ to the host's, so the two can never disagree.
 
 - **createvm plans disks, attachstorage attaches them.** `disks.select_disks` keeps
   #112's structure: the selection is stored in the spec (`spec["disks"]`) and is

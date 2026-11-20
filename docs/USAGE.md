@@ -139,6 +139,7 @@ python3 cld.py createvm --non-interactive myvm.yaml
 | `--dry-run` | walk every step, print the create payload, change nothing |
 | `--save-answers FILE` | write this run's spec to a YAML file |
 | `--non-interactive FILE` | replay a saved spec with no prompts |
+| `--host HOST` | pin to this compute host (admin) without the AZ / host questions; an unknown or down host stops before any question, a flavor that doesn't fit needs a yes (default No); overrides a saved spec's host |
 
 Flow: **cloud (project) → availability zone → flavor → compute host (optional pin) → image → network/subnet →
 security → data disks (optional, planned only) → name → confirm → create** (then an
