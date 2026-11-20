@@ -63,7 +63,8 @@ suite — a Python 3 package run directly. Subcommands:
   `--all-projects`. `volumes` shows each Cinder volume + the VM it's attached to +
   created/updated (UTC). Cinder has no last-accessed/I/O timestamp, so `updated_at`
   (last record change) is the recency stand-in — don't try to add "last accessed".
-  `--available 0|1` filters `volumes` by Cinder status: `1` = `status == "available"`,
+  `--available [0|1]` filters `volumes` by Cinder status: `1` (or bare `--available`,
+  `nargs="?"`, `const=1`) = `status == "available"`,
   `0` = its exact complement (so 1/0 partition the list; `error`/`creating` volumes
   land in `0`, which is intentional — they're the ones worth surfacing). It's the only
   non-`store_true` switch in the CLI because it needs three states (1 / 0 / omitted);
@@ -145,7 +146,7 @@ pip install -r requirements.txt           # openstacksdk, rich (optional), PyYAM
 
 # Read-only / safe:
 python3 cld.py check --cloud <name>                 # auth smoke test, prints scope, exits
-python3 cld.py list [resource] [--cloud <name>] [--all-projects] [--available 0|1]  # inventory, no writes, unlogged
+python3 cld.py list [resource] [--cloud <name>] [--all-projects] [--available [0|1]]  # inventory, no writes, unlogged
 python3 cld.py createvm --cloud <name> --dry-run    # full wizard, prints payload, creates nothing
 python3 cld.py attachstorage --cloud <name> --serverid <id> --dry-run  # plan only
 python3 cld.py deletevolume --cloud <name> --volumeid <uuid> --dry-run  # report only

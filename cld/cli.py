@@ -258,9 +258,10 @@ def build_parser():
                         help="servers/volumes: include every project (admin); "
                              "default is the current project")
     p_list.add_argument("--available", type=int, choices=[0, 1], default=None,
-                        metavar="0|1",
-                        help="volumes: 1 = only available (unattached) volumes, "
-                             "0 = only unavailable ones; default is all")
+                        nargs="?", const=1, metavar="0|1",
+                        help="volumes: 1 (or bare --available) = only available "
+                             "(unattached) volumes, 0 = only unavailable ones; "
+                             "default is all")
 
     p_comp = sub.add_parser(
         "completion", help="print a shell completion script",
