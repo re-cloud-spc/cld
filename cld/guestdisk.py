@@ -16,10 +16,20 @@ Runs through cld.guest (qemu-guest-agent, or SSH as a fallback). Three phases:
                 partitions / formats / mounts / appends to fstab. fstab is backed up
                 and verified with `findmnt --verify`; a failed verify restores it.
 
+Moving a folder onto a new filesystem (/home/<user>, /var/log, /var/lib/<name>,
+/var/www, /srv /opt /data subfolders, /tmp): the folder must be a plain directory
+with no mounts below it, fit on the disk and be used by no process (for /var/log
+journald and rsyslog are released and re-opened by cld). The data is copied to the
+new filesystem, the copy is compared, then the folder is renamed to
+<folder>.cld-old-<time> and the new filesystem mounted in its place. The old copy is
+NEVER deleted by cld. /tmp is not copied: it is prepared (1777) and switches at the
+next reboot. Never /, /boot, /etc, /usr or all of /var.
+
 Hard rules: never the root disk or a mounted disk; never format a disk with data
 unless its wipe was confirmed by typing its ID; only ever ADD fstab lines (by-id
 path + nofail, never LABEL=/UUID=, which cloned volumes share); never mount over a
-non-empty directory; never touch grub, the kernel cmdline or the VM's own disk.
+non-empty directory (a moved folder is renamed away first, never hidden); never
+touch grub, the kernel cmdline or the VM's own disk.
 """
 
 import os
@@ -33,6 +43,10 @@ from cld.ui import (out, header, warn, err, render_table, choose, confirm,
 
 LINUX_GUID = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"   # GPT "Linux filesystem data"
 _MP_RE = re.compile(r"/(mnt|srv|data|opt)(/[A-Za-z0-9._-]+)+")
+_SEG = r"/[A-Za-z0-9._-]+"
+_MOVE_RE = re.compile(rf"/tmp|/var/log({_SEG})?|/var/www({_SEG})?|/var/lib({_SEG})+"
+                      rf"|/home/[a-z_][a-z0-9_.-]*|/(srv|opt|data)({_SEG})+")
+_LOG_WRITERS = {"systemd-journal", "rsyslogd"}   # released / re-opened by cld
 _MAX_PARTS = 8
 
 
@@ -46,7 +60,8 @@ def _q(s):
 
 def _gb(n):
     try:
-        return f"{int(n) / 1024 ** 3:.1f}G"
+        n = int(n)
+        return f"{n / 1024 ** 3:.1f}G" if n >= 1024 ** 3 else f"{n / 1024 ** 2:.0f}M"
     except (TypeError, ValueError):
         return "?"
 
@@ -207,6 +222,95 @@ def _free_mountpoint(g, taken):
     return None
 
 
+def _overlaps(path, taken):
+    return any(path == t or path.startswith(t + "/") or t.startswith(path + "/")
+               for t in taken)
+
+
+def _users(g, path, kind):
+    """Processes (cwd/root/exe/open files/mapped files) and unix sockets under
+    `path`. READ-ONLY. -> (all users, blockers); for /var/log journald and rsyslog
+    are not blockers, cld releases them."""
+    _, txt = g.run(
+        f"D={_q(path)}; pids=$( (find /proc/[0-9]*/cwd /proc/[0-9]*/root "
+        f"/proc/[0-9]*/exe /proc/[0-9]*/fd -maxdepth 1 \\( -lname \"$D\" -o -lname "
+        f"\"$D/*\" \\) 2>/dev/null; grep -lF \" $D/\" /proc/[0-9]*/maps 2>/dev/null) "
+        f"| cut -d/ -f3 | sort -un); for p in $pids; do echo \"$p $(cat /proc/$p/comm "
+        f"2>/dev/null)\"; done; awk -v d=\"$D\" 'NR > 1 && ($NF == d || "
+        f"index($NF, d \"/\") == 1) {{print \"socket\", $NF}}' /proc/net/unix",
+        timeout=120)
+    users = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+    ok = _LOG_WRITERS if kind == "log" else set()
+    return users, [u for u in users if u.split(" ", 1)[-1] not in ok]
+
+
+def _move_problem(g, path, cap):
+    """Why `path` cannot be moved onto a filesystem of `cap` bytes, or None.
+    READ-ONLY. -> (problem, bytes used)."""
+    q = _q(path)
+    rc, _ = g.run(f"[ -d {q} ] && [ ! -L {q} ]")
+    if rc != 0:
+        return "is not an existing folder (or is a symlink)", 0
+    rc, _ = g.run(f"findmnt -rn --mountpoint {q}")
+    if rc == 0:
+        return "is already a mount point (e.g. a tmpfs)", 0
+    _, sub = g.run(f"findmnt -rno TARGET | awk -v d={_q(path + '/')} 'index($0, d) == 1'")
+    if sub.strip():
+        return f"has mounts below it ({', '.join(sub.split()[:3])})", 0
+    if path == "/tmp":
+        return None, 0
+    _, du = g.run(f"du -sx --block-size=1 {q} 2>/dev/null | cut -f1", timeout=600)
+    if not du.strip().isdigit():
+        return "its size could not be read", 0
+    used = int(du)
+    if used > cap * 0.85:          # filesystem overhead + ext4's 5% root reserve
+        return f"holds {_gb(used)}, too much for {_gb(cap)}", used
+    return None, used
+
+
+def _ask_move(g, taken, cap):
+    """An existing folder to move onto the new filesystem. None = none."""
+    out("[dim]  Allowed: /home/<user>, /var/log, /var/lib/<name>, /var/www, folders "
+        "under /srv /opt /data, /tmp. Never /, /boot, /etc, /usr or all of /var.[/dim]")
+    while True:
+        p = prompt_str("  Folder to move onto this disk (Enter = none)", required=False)
+        if not p:
+            return None
+        p = p.rstrip("/") or "/"
+        if p == "/var":
+            warn("all of /var is refused on a running VM (in use all the time, needed "
+                 "early at boot); move /var/log or /var/lib/<name> instead")
+            continue
+        if not _MOVE_RE.fullmatch(p) or ".." in p:
+            warn(f"{p} cannot be moved by cld")
+            continue
+        if _overlaps(p, taken):
+            warn(f"{p} overlaps a folder already in this plan")
+            continue
+        prob, used = _move_problem(g, p, cap)
+        if prob:
+            warn(f"{p} {prob}")
+            continue
+        kind = "tmp" if p == "/tmp" else "log" if p == "/var/log" else "data"
+        m = {"mp": p, "move": kind, "used": used}
+        if kind == "tmp":
+            m["chmod"] = "1777"
+            out("[dim]  /tmp is not copied: the new filesystem is prepared (1777, "
+                "nosuid, nodev) and takes over /tmp at the next reboot.[/dim]")
+            return m
+        out(f"  {p}: {_gb(used)} to copy; the old folder is kept as "
+            f"{p}.cld-old-<time> on the VM's own disk.")
+        users, blockers = _users(g, p, kind)
+        if blockers:
+            warn(f"{p} is in use by: {'; '.join(blockers[:8])}. Stop these (e.g. log "
+                 "the user out, systemctl stop <service>) before Apply, or cld stops "
+                 "there and changes nothing.")
+        elif users:
+            out(f"[dim]  {', '.join(sorted({u.split(' ', 1)[-1] for u in users}))} "
+                "will be released and re-opened by cld.[/dim]")
+        return m
+
+
 def _ask_mountpoint(g, taken, required):
     """Mount point under /mnt /srv /data /opt that is free and empty. None = skip."""
     suggest = _free_mountpoint(g, taken)
@@ -221,8 +325,8 @@ def _ask_mountpoint(g, taken, required):
         if not _MP_RE.fullmatch(mp) or ".." in mp:
             warn("must be a path under /mnt, /srv, /data or /opt (e.g. /mnt/data1)")
             continue
-        if mp in taken:
-            warn(f"{mp} is already used by this plan")
+        if _overlaps(mp, taken):
+            warn(f"{mp} overlaps a folder already in this plan")
             continue
         rc, _ = g.run(f"findmnt -rno TARGET {_q(mp)}")
         if rc == 0:
@@ -250,8 +354,19 @@ def _ask_access(g):
     return {}
 
 
-def _ask_new_fs(g, taken, label):
+def _ask_new_fs(g, taken, label, cap):
     fstype = choose("  Filesystem", ["ext4", "xfs"], default_index=0)
+    use = choose("  Use it for", ["a new, empty folder (under /mnt /srv /data /opt)",
+                                  "an existing folder, moved onto it (/home/<user>, "
+                                  "/var/log, /var/lib/<name>, /tmp, ...)"],
+                 default_index=0)
+    if use.startswith("an existing"):
+        mv = _ask_move(g, taken, cap)
+        if mv:
+            taken.add(mv["mp"])
+            # A moved folder MUST come back after a reboot: fstab is not optional.
+            return dict(mv, mkfs=fstype, label=label, mode="rw", fstab=True, cap=cap)
+        out("[dim]  No folder picked; it gets a new, empty folder instead.[/dim]")
     mp = _ask_mountpoint(g, taken, required=True)
     taken.add(mp)
     m = {"mkfs": fstype, "label": label, "mp": mp, "mode": "rw"}
@@ -269,7 +384,8 @@ def _ask_layout(g, info, taken):
                    "split it into partitions (GPT)"])
     if pick.startswith("whole"):
         out("[bold]Whole disk[/bold]")
-        return None, [dict(_ask_new_fs(g, taken, f"data-{vid[:7]}"), src=info["byid"])]
+        return None, [dict(_ask_new_fs(g, taken, f"data-{vid[:7]}", info["size"]),
+                           src=info["byid"])]
     sizes, left = [], int(size_g) - 1          # GPT headers + alignment: keep 1 GiB
     while len(sizes) < _MAX_PARTS - 1 and left >= 1:
         n = len(sizes) + 1
@@ -285,7 +401,8 @@ def _ask_layout(g, info, taken):
     mounts = []
     for n, sz in enumerate(sizes, 1):
         out(f"[bold]Partition {n}[/bold] ({f'{sz} GiB' if sz else 'rest of the disk'})")
-        mounts.append(dict(_ask_new_fs(g, taken, f"d{vid[:7]}p{n}"),
+        cap = (sz or left) * 1024 ** 3
+        mounts.append(dict(_ask_new_fs(g, taken, f"d{vid[:7]}p{n}", cap),
                            src=f"{info['byid']}-part{n}", part=n))
     return sizes, mounts
 
@@ -391,7 +508,13 @@ def show_plan(plans, server, g):
             fs = f"new {m['mkfs']}" if m.get("mkfs") else m.get("fstype", "?")
             who = (f"all (1777)" if m.get("chmod") else
                    m["chown"] if m.get("chown") else "root")
-            rows.append([src, fs, m["mp"], m["mode"], who,
+            mp = m["mp"]
+            if m.get("move") == "tmp":
+                mp += " (next reboot)"
+            elif m.get("move"):
+                mp += f" (move {_gb(m['used'])})"
+                who = "as before"
+            rows.append([src, fs, mp, m["mode"], who,
                          "yes" if m["fstab"] else "no"])
     render_table("Mounts", ["device", "filesystem", "mount point", "mode", "writers",
                             "fstab"], rows)
@@ -409,10 +532,10 @@ def _sfdisk_script(sizes):
     return "\n".join(lines) + "\n"
 
 
-def _mount_opts(fstype, mode):
+def _mount_opts(fstype, mode, mp=None):
     if mode == "ro":
         return {"ext4": "ro,noload", "xfs": "ro,norecovery"}.get(fstype, "ro")
-    return "rw"
+    return "rw,nosuid,nodev" if mp == "/tmp" else "rw"
 
 
 def _precheck(g, plans, protected, rootdev):
@@ -440,6 +563,16 @@ def _precheck(g, plans, protected, rootdev):
                 if sig.strip():
                     problems.append(f"{vid}: no longer blank")
         for m in p["mounts"]:
+            if m.get("move"):
+                prob, _ = _move_problem(g, m["mp"], m["cap"])
+                if prob:
+                    problems.append(f"{m['mp']} {prob}")
+                elif m["move"] != "tmp":
+                    _, blockers = _users(g, m["mp"], m["move"])
+                    if blockers:
+                        problems.append(f"{m['mp']} is in use by: "
+                                        f"{'; '.join(blockers[:8])} -- stop them first")
+                continue
             rc, _ = g.run(f"findmnt -rno TARGET {_q(m['mp'])}")
             _, n = g.run(f"[ -e {_q(m['mp'])} ] && ls -A {_q(m['mp'])} | wc -l || echo 0")
             if rc == 0 or n.strip() != "0":
@@ -492,12 +625,15 @@ def _apply_one(g, server, p, fstab_state):
                          f"&& udevadm settle", timeout=900):
                 return False
             m["fstype"] = m["mkfs"]
-        opts = _mount_opts(m["fstype"], m["mode"])
-        if not _step(g, server, vid, f"mount {m['mp']} ({opts})",
-                     f"mkdir -p {_q(m['mp'])} && mount -o {opts} {_q(m['src'])} "
-                     f"{_q(m['mp'])}"):
+        opts = _mount_opts(m["fstype"], m["mode"], m["mp"])
+        if m.get("move"):
+            if not _move_in(g, server, vid, m, opts):
+                return False
+        elif not _step(g, server, vid, f"mount {m['mp']} ({opts})",
+                       f"mkdir -p {_q(m['mp'])} && mount -o {opts} {_q(m['src'])} "
+                       f"{_q(m['mp'])}"):
             return False
-        if m.get("chmod"):
+        if m.get("chmod") and not m.get("move"):
             _step(g, server, vid, f"chmod {m['chmod']} {m['mp']}",
                   f"chmod {m['chmod']} {_q(m['mp'])}")
         if m.get("chown"):
@@ -518,6 +654,95 @@ def _apply_one(g, server, p, fstab_state):
                          f"grep -qF {_q(m['src'] + ' ')} /etc/fstab || "
                          f"echo {_q(line)} >> /etc/fstab"):
                 return False
+    return True
+
+
+def _count(d):
+    """'<entries> <bytes in regular files>' below d, lost+found of a new fs left out."""
+    return (f"find {d} -xdev -mindepth 1 -path {d}/lost+found -prune -o -printf "
+            f"'%y %s\\n' | awk '{{n++; if ($1 == \"f\") b += $2}} END {{print n+0, b+0}}'")
+
+
+def _copy(g, server, vid, m, tmp):
+    """Copy the folder onto the new filesystem and compare. -> True if equal."""
+    src, q = m["mp"], _q(m["mp"])
+    for attempt in (1, 2):
+        if not _step(g, server, vid, f"copy {src} ({_gb(m['used'])})",
+                     f"if command -v rsync >/dev/null; then rsync -aHAXx --numeric-ids "
+                     f"{q}/ {tmp}/; else cp -ax {q}/. {tmp}/; fi", timeout=6 * 3600):
+            return False
+        _, c = g.run(f"{_count(q)}; {_count(tmp)}", timeout=1800)
+        a, b = (c.splitlines() + ["", ""])[:2]
+        if a and a == b:
+            out(f"  compare: [green]OK[/green] ({a.split()[0]} entries)")
+            return True
+        try:
+            (na, ba), (nb, bb) = (map(int, x.split()) for x in (a, b))
+        except ValueError:
+            break
+        # /var/log: rsyslog may append a line between copy and compare.
+        if attempt == 2 and m["move"] == "log" and na == nb and 0 <= ba - bb < 1 << 20:
+            warn(f"  compare: {ba - bb} bytes of fresh log lines not copied; accepted")
+            return True
+    err(f"the copy differs from {src} (source: {a or '?'}, copy: {b or '?'} "
+        "entries/bytes); not switching")
+    audit.warn("guest.copy.mismatch", id=vid, server=server.id, folder=src)
+    return False
+
+
+def _move_in(g, server, vid, m, opts):
+    """Copy the folder onto the new filesystem (mounted at a temporary place),
+    compare, rename the folder to <folder>.cld-old-<time>, mount the new one in its
+    place. The old copy is never deleted. /tmp: only prepared, switches at reboot."""
+    p, q, dev = m["mp"], _q(m["mp"]), _q(m["src"])
+    tmp = _q(f"/mnt/.cld-move-{m['label']}")
+    if m["move"] == "tmp":
+        return _step(g, server, vid, "prepare /tmp (1777, next reboot)",
+                     f"mkdir -p {tmp} && mount {dev} {tmp} && chmod 1777 {tmp}; "
+                     f"rc=$?; umount {tmp} 2>/dev/null; rmdir {tmp}; exit $rc")
+    users, blockers = _users(g, p, m["move"])
+    if blockers:
+        err(f"{p} is in use by: {'; '.join(blockers[:8])}. Stop them and re-run; the "
+            "new filesystem stays unused, the folder untouched.")
+        audit.warn("guest.move.blocked", id=vid, server=server.id, folder=p,
+                   users="; ".join(blockers[:8]))
+        return False
+    if not _step(g, server, vid, f"mount {m['src'].rsplit('/', 1)[-1]} at {tmp} (temp)",
+                 f"mkdir -p {tmp} && mount {dev} {tmp}"):
+        return False
+    released = False
+    if any(u.endswith(" systemd-journal") for u in users):
+        if not _step(g, server, vid, "journal relinquish /var/log",
+                     "journalctl --relinquish-var"):
+            g.run(f"umount {tmp} && rmdir {tmp}")
+            return False
+        released = True
+
+    def undo_release():
+        if released:
+            _step(g, server, vid, "journal flush to /var/log", "journalctl --flush")
+
+    if not _copy(g, server, vid, m, tmp):
+        g.run(f"umount {tmp} && rmdir {tmp}")
+        undo_release()
+        return False
+    g.run(f"umount {tmp} && rmdir {tmp}")
+    old = f"{p}.cld-old-{g.run('date +%Y%m%d-%H%M%S')[1].strip()}"
+    qo = _q(old)
+    # One shell: rename, recreate with the same owner/mode, mount. Any failure puts
+    # the original folder back.
+    if not _step(g, server, vid, f"move {p} -> new disk (old: {old})",
+                 f"mv {q} {qo} && mkdir {q} && chown --reference={qo} {q} && "
+                 f"chmod --reference={qo} {q} && mount -o {opts} {dev} {q} || "
+                 f"{{ rmdir {q} 2>/dev/null; [ -e {q} ] || mv {qo} {q}; exit 1; }}"):
+        undo_release()
+        return False
+    m["old"] = old
+    g.run(f"command -v selinuxenabled >/dev/null && selinuxenabled && restorecon -R {q}",
+          timeout=600)
+    undo_release()
+    if any(u.endswith(" rsyslogd") for u in users):
+        _step(g, server, vid, "rsyslog reopen (HUP)", "pkill -HUP -x rsyslogd")
     return True
 
 
@@ -560,6 +785,13 @@ def apply_plans(g, server, plans, protected, rootdev):
         audit.warn("guest.lost", server=server.id, error=str(e))
         return False
     _verify(g, plans)
+    for m in (m for p in plans for m in p["mounts"]):
+        if m.get("old"):
+            out(f"Old copy of {m['mp']}: [bold]{m['old']}[/bold] ({_gb(m['used'])}, on "
+                "the VM's own disk). Check the moved folder, then delete it yourself: "
+                f"rm -rf {_q(m['old'])}", wrap=False)
+        elif m.get("move") == "tmp" and ok:
+            out("/tmp switches to the new disk at the next reboot (fstab entry added).")
     return ok
 
 

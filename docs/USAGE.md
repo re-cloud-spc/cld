@@ -198,7 +198,8 @@ After the attach, `cld` goes **into the VM** and sets the disk up with you:
      table) or **split it** (GPT; you give each partition's size, the last one gets
      the rest). Then, for each filesystem: ext4 or xfs, mount point (under `/mnt`,
      `/srv`, `/data` or `/opt`; must be free and empty), who may write (root, everyone
-     with sticky `1777`, or one user), and fstab yes/no.
+     with sticky `1777`, or one user), and fstab yes/no. Or **move an existing
+     folder onto it** (see below).
    - **has data**: keep it and choose which partition mounts where (**read-only by
      default**), wipe it (type its ID), or leave it unmounted.
 4. **Plan and apply.** It shows the plan, re-checks everything (same device, not
@@ -217,6 +218,39 @@ what is on it (a read-only Ceph look) and attaches it **only after you type its 
 agree that it is wiped right after. Say no and it is not attached. Without guest access
 it is never attached. If the wipe does not happen after all, `cld` says so and prints
 the detach command: don't reboot until it is detached or wiped.
+
+#### Moving an existing folder onto the new disk
+
+Instead of a new, empty folder, a new filesystem can take over an existing folder:
+
+| Folder | How |
+|---|---|
+| `/home/<user>`, `/var/lib/<name>` (docker, postgresql, mysql, ...), `/var/www`, folders under `/srv` `/opt` `/data` | copied while nothing uses it, then switched |
+| `/var/log` | the same; journald is told to let go of `/var/log/journal` and rsyslog re-opens its files afterwards |
+| `/tmp` | not copied: the filesystem is prepared (`1777`, `nosuid,nodev`) and **switches at the next reboot** (running programs keep sockets in `/tmp`) |
+| all of `/var`, `/`, `/boot`, `/etc`, `/usr`, `/home` itself | refused |
+
+The folder must be a plain directory (not a symlink, not a mount point such as a
+tmpfs `/tmp`), with no mounts below it, and use at most 85% of the new filesystem.
+**Nothing may be using it**: `cld` lists the processes (open files, working
+directories, mapped libraries) and unix sockets under it and stops if there are any,
+at the interview and again right before the switch. Log the user out or
+`systemctl stop <service>` first (docker: `systemctl stop docker docker.socket`).
+
+The move, after "Apply this plan?":
+
+1. mount the new filesystem at `/mnt/.cld-move-<label>` and copy (`rsync -aHAXx`, or
+   `cp -ax` without rsync: owners, modes, hard links, ACLs and xattrs kept);
+2. compare entries and bytes on both sides; a mismatch stops here, nothing switched;
+3. in one step: rename the folder to `<folder>.cld-old-<time>`, recreate it with the
+   same owner/mode, mount the new filesystem on it (a failure puts the original
+   back); then `restorecon` on SELinux systems;
+4. add the fstab line (always, for a moved folder).
+
+**The old copy is never deleted by `cld`.** It stays on the VM's own disk as
+`<folder>.cld-old-<time>`; check the moved folder, start the services again, then
+delete it yourself. The fstab line has `nofail`: if the volume is missing at boot,
+the VM still boots and the folder is **empty** (not stale), which services notice.
 
 ### Mounting by hand (no guest access, or `--attach-only`)
 

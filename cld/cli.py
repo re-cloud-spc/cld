@@ -46,6 +46,11 @@ after the attach, inside the VM (unless --attach-only):
   (/dev/disk/by-id/virtio-<first 20 chars of the volume ID>) and asks:
     - a blank (or wiped) disk: whole disk or split into partitions; then
       for each: ext4/xfs, mount point, who may write, fstab
+    - instead of a new folder, a filesystem can take over an existing one:
+      /home/<user>, /var/log, /var/lib/<name>, /var/www, /srv|/opt|/data/...
+      (copied, compared, old folder kept as <folder>.cld-old-<time>; nothing
+      may use it, else cld stops) or /tmp (switches at the next reboot).
+      Never all of /var, /, /etc, /usr, /boot.
     - a disk with data: keep it (choose which partition mounts where,
       read-only by default), wipe it, or leave it unmounted
   It re-checks everything, shows the plan and asks (default No) before any
