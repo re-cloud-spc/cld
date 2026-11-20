@@ -291,6 +291,9 @@ confirmed gone (or reports `error_deleting`). Any backups remain.
   `user_data` (requires the image to support cloud-init).
 - Lists **security groups** and loudly flags any with world-open (`0.0.0.0/0`)
   ingress; adding such a group requires explicit confirmation.
+  If you pick none, cld reads the project's own `default` group and reports its
+  actual rules; a world-open `default` needs the same explicit yes (default No
+  returns to the group menu).
 - **Floating IP** assignment is off by default and needs a second confirmation;
   choosing an external network warns and re-confirms.
 - Offers an **encrypted (LUKS) volume type** for the data volume when available.

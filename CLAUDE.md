@@ -170,6 +170,9 @@ confirm a `logs/cld-*.log` line appears for each invocation.
   — required, not cosmetic, because `vm.build_payload` sends SG *names* and Nova
   re-resolves them in the target project, so an unfiltered menu can warn about
   world-open rules belonging to a different group than the one actually attached.
+  When none is picked, `steps._accept_default_sg` reads the project's real `default`
+  group (rc3's admin one is world-open) instead of assuming stock rules, and a
+  world-open default needs the same `confirm(default=False)` as picking one by hand.
   Flavors/images/keypairs/AZs are not project-partitioned here and need no filter.
 
 - **App-credential-per-project auth model.** Application credentials are permanently
