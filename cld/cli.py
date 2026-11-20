@@ -77,11 +77,19 @@ examples:
 
 
 _CREATE_EPILOG = """\
-steps:
-  cloud (= project) -> availability zone -> flavor -> compute host -> image
-  -> network/subnet -> security -> summary -> confirm (default No) -> create
-  Data volumes are not part of createvm; add one afterwards with
-  `cld attachstorage`.
+wizard questions (Enter = default; q or Ctrl-D quits, creates nothing):
+   1. cloud (project): only if no --cloud and >1 clouds.yaml entry
+   2. availability zone: only if >1 AZ; Enter lets the scheduler decide
+   3. flavor: required; one that cannot boot needs an extra yes
+   4. compute host: only hosts with room; Enter = scheduler decides
+   5. image: required
+   6. network/subnet: required; an external network needs an extra yes
+   7. SSH keypairs: several allowed (e.g. 1,3); Enter = none (risky)
+   8. security groups: repeat, Enter ends; world-open groups need a yes
+   9. floating IP: default No; a yes needs a second confirmation
+  10. VM name: required, free text
+  11. Create this VM now?: default No; skipped with --dry-run
+  Data volumes are not part of createvm; use `cld attachstorage` after.
 
 compute host (admin; shown after the flavor):
   a table of every compute host in the chosen AZ with free vCPU / RAM from
