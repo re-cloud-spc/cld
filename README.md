@@ -251,6 +251,9 @@ in-guest access.
 
 ## What "inventory" means at each step
 
+Menus are numbered from `0`; multi-selects take e.g. `0,2`. Where a step can be
+skipped, skipping is Enter only (it has no number). `q` or Ctrl-D quits.
+
 - **Project** — fixed by the chosen credential; the tool re-confirms the scope.
 - **AZ** — per-AZ host count, vCPU and RAM used/total and RAM free (summed from
   Placement), server count, the per-host table, plus the Cinder and Neutron AZ lists.
@@ -266,7 +269,7 @@ in-guest access.
   were booted from each (boot-from-volume servers aren't counted).
 - **Data disks** (after security; optional) — this project's `available`, unattached
   volumes with a short ID (last 4 characters, longer if that would be ambiguous),
-  name, size, bootable flag, AZ and created date. Pick by the zero-based `#`
+  name, size, bootable flag, AZ and created date. Pick by the `#`
   (e.g. `0,2`; Enter = none). A bootable / image volume (likely an old root disk,
   whose `cloudimg-rootfs`/`UEFI`/`BOOT` labels can hijack the new VM's boot) needs an
   explicit yes each, default No. **Nothing is attached by `createvm`**: the disks are
@@ -287,7 +290,7 @@ in-guest access.
 
 ## Security behaviour (built in)
 
-- Prompts for one or more **SSH keypairs** (comma-separated multi-select); warns
+- Prompts for one or more **SSH keypairs** (comma-separated multi-select, e.g. `0,2`); warns
   if you skip them. Nova injects only one keypair at boot, so the first selected
   becomes the VM's keypair and any others are added via cloud-init `user_data`
   (requires the image to support cloud-init).

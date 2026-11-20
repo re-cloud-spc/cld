@@ -264,6 +264,9 @@ confirmed gone (or reports `error_deleting`). Any backups remain.
 
 ## 6. What each createvm step shows you
 
+Menus are numbered from `0`; multi-selects take e.g. `0,2`. Where a step can be
+skipped, skipping is Enter only (it has no number). `q` or Ctrl-D quits.
+
 - **Cloud (project)** — the project is fixed by the chosen credential entry.
 - **Availability zone** (only prompts if more than one; `internal` is never
   offered) — per-AZ host count, vCPU and RAM used/total and RAM free summed from
@@ -281,7 +284,7 @@ confirmed gone (or reports `error_deleting`). Any backups remain.
   many servers were booted from each (boot-from-volume servers aren't counted).
 - **Data disks** (after security; optional) — this project's `available`, unattached
   volumes with a short ID (last 4 characters, longer if that would be ambiguous),
-  name, size, bootable flag, AZ and created date. Pick by the zero-based `#`
+  name, size, bootable flag, AZ and created date. Pick by the `#`
   (e.g. `0,2`; Enter = none). A bootable / image volume (likely an old root disk,
   whose `cloudimg-rootfs`/`UEFI`/`BOOT` labels can hijack the new VM's boot) needs an
   explicit yes each, default No. **Nothing is attached by `createvm`**: the disks are
@@ -300,7 +303,7 @@ confirmed gone (or reports `error_deleting`). Any backups remain.
 ## 7. Security behaviour (built in)
 
 - Prompts for one or more **SSH keypairs** (comma-separated multi-select, e.g.
-  `1,3`); warns if you skip them. Nova injects only one keypair at boot, so the
+  `0,2`); warns if you skip them. Nova injects only one keypair at boot, so the
   first selected becomes the VM's keypair and the rest are added via cloud-init
   `user_data` (requires the image to support cloud-init).
 - Lists **security groups** and loudly flags any with world-open (`0.0.0.0/0`)
