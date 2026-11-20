@@ -11,6 +11,7 @@ from openstack import resource
 from openstack.compute.v2 import server as _server
 
 from cld import audit
+from cld.disks import short_ids
 from cld.steps import next_available_ip
 from cld.ui import (out, header, warn, err, render_table, confirm,
                     confirm_destructive)
@@ -173,8 +174,9 @@ def create_vm(conn, spec):
     out(f"[bold green]Done.[/bold green] Server {server.id}")
     cloud = spec.get("cloud")
     cloud_flag = f"--cloud {cloud} " if cloud else ""
-    out(f"[dim]To add a data volume, run:[/dim]\n"
-        f"  cld attachstorage {cloud_flag}--serverid {server.id}")
+    if not spec.get("disks"):  # planned disks get their own lines (cli)
+        out(f"[dim]To add a data volume, run:[/dim]\n"
+            f"  cld attachstorage {cloud_flag}--serverid {server.id}")
     return server
 
 
@@ -210,6 +212,15 @@ def _offer_rollback(conn, server, port=None):
             warn(f"could not delete port: {e}")
 
 
+def _disks_summary(disks):
+    if not disks:
+        return "(none)"
+    sid = short_ids([d["id"] for d in disks])
+    return ", ".join(f"{d.get('name') or '(unnamed)'} …{sid[d['id']]} "
+                     f"{d.get('size', '?')} GB" + (" (bootable)" if d.get("bootable") else "")
+                     for d in disks)
+
+
 def print_summary(spec):
     header("Summary")
     rows = [
@@ -226,5 +237,6 @@ def print_summary(spec):
         ["security groups", ", ".join(spec["security"].get("security_groups") or [])
                             or "(default)"],
         ["floating IP", "yes" if spec["security"].get("floating_ip") else "no"],
+        ["data disks (after)", _disks_summary(spec.get("disks"))],
     ]
     render_table("VM to create", ["field", "value"], rows)

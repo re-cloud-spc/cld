@@ -183,6 +183,23 @@ def choose_multi(prompt, items, label=lambda x: str(x), none_label="(none)"):
         return chosen
 
 
+def choose_indices(prompt, count):
+    """Zero-based multi-select against a table the caller already printed (its
+    `#` column). Reads '0,2' or '0 2'; Enter = none. -> sorted unique indices.
+    Re-prompts on anything out of range; q / Ctrl-D abort like every prompt."""
+    hint = (f"enter numbers 0-{count - 1} separated by commas/spaces, Enter "
+            "for none, or q to quit")
+    while True:
+        raw = _ask(f"{prompt} (e.g. 0,2; Enter = none) > ")
+        if raw == "":
+            return []
+        tokens = [t for t in raw.replace(",", " ").split() if t]
+        if not all(t.isdigit() for t in tokens) or any(int(t) >= count for t in tokens):
+            warn(hint)
+            continue
+        return sorted({int(t) for t in tokens})
+
+
 def prompt_int(prompt, minimum=None, maximum=None, default=None):
     while True:
         suffix = f" [default {default}]" if default is not None else ""

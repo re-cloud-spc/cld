@@ -12,6 +12,7 @@ from cld import audit
 from cld.cloud import connect, select_cloud, run_check
 from cld.inventory import Inventory
 from cld.hosts import host_capacity, host_fit, select_host
+from cld.disks import select_disks, recheck_disks, print_attach_commands
 from cld.steps import (current_project, select_az, select_flavor, select_image,
                        select_network, security_review, flavor_topology,
                        flavor_warnings)
@@ -99,9 +100,11 @@ wizard questions (Enter = default; q or Ctrl-D quits, creates nothing):
    7. SSH keypairs: several allowed (e.g. 1,3); Enter = none (risky)
    8. security groups: repeat, Enter ends; world-open groups need a yes
    9. floating IP: default No; a yes needs a second confirmation
-  10. VM name: required, free text
-  11. Create this VM now?: default No; skipped with --dry-run
-  Data volumes are not part of createvm; use `cld attachstorage` after.
+  10. data disks: available ones, by # (0-based); bootable need a yes
+  11. VM name: required, free text
+  12. Create this VM now?: default No; skipped with --dry-run
+  Disks are never attached by createvm: once the VM is ACTIVE it prints
+  one `cld attachstorage --disk <full-id>` line per disk (re-checked).
 
 compute host (admin; shown after the flavor):
   a table of every compute host in the chosen AZ with free vCPU / RAM from
@@ -296,6 +299,7 @@ def run_interactive(cloud):
     if not network:
         sys.exit(1)
     security = security_review(conn, project_id)
+    disks = select_disks(conn, project_id, az)
     name = prompt_str("VM name", default=None)
 
     spec = {
@@ -309,6 +313,7 @@ def run_interactive(cloud):
         "image_id": image.id, "image_name": image.name,
         "network": network,
         "security": security,
+        "disks": disks,
     }
     return conn, spec
 
@@ -393,14 +398,29 @@ def cmd_createvm(args):
         out("[yellow]--dry-run: no resources created.[/yellow]")
         out("[dim]create payload:[/dim]")
         out(str(build_payload(spec, conn=conn)))
+        _planned_disks(conn, spec)
         return 0
 
     if not confirm("Create this VM now?", default=False):
         out("Aborted; nothing created.")
         return 0
 
-    create_vm(conn, spec)
+    server = create_vm(conn, spec)
+    if server is not None:
+        _planned_disks(conn, spec, server.id)
+    elif spec.get("disks"):
+        out("[dim]The planned data disks were not touched.[/dim]")
     return 0
+
+
+def _planned_disks(conn, spec, server_id=None):
+    """Re-read the planned disks (read-only) and print an attachstorage line for
+    each one still available. createvm itself never attaches (rc3 #112)."""
+    if not spec.get("disks"):
+        return
+    project_id = spec.get("project_id") or getattr(conn, "current_project_id", None)
+    print_attach_commands(recheck_disks(conn, spec["disks"], project_id),
+                          spec.get("cloud"), server_id)
 
 
 def cmd_attachstorage(args):
