@@ -40,21 +40,27 @@ SUBCOMMANDS = {"init", "createvm", "attachstorage", "deletevolume", "check", "li
 
 
 _ATTACH_EPILOG = """\
-after a successful attach:
-  cld prints the in-guest steps to format/mount the disk. It names the disk by
-  its exact path, /dev/disk/by-id/virtio-<first 20 chars of the volume ID>;
-  Nova's /dev/vdX is only a hint (the guest may name it differently).
-  cld never mounts anything itself.
+after the attach, inside the VM (unless --attach-only):
+  cld gets in through the qemu-guest-agent (via the compute node), or asks
+  for an SSH target as a fallback. It finds each disk by its serial
+  (/dev/disk/by-id/virtio-<first 20 chars of the volume ID>) and asks:
+    - a blank (or wiped) disk: whole disk or split into partitions; then
+      for each: ext4/xfs, mount point, who may write, fstab
+    - a disk with data: keep it (choose which partition mounts where,
+      read-only by default), wipe it, or leave it unmounted
+  It re-checks everything, shows the plan and asks (default No) before any
+  change. fstab is backed up, only appended to and verified. Without guest
+  access it prints the manual steps instead.
 
-bootable / image volumes (an old VM's root disk):
-  they carry the labels cloudimg-rootfs / UEFI / BOOT that the VM itself boots
-  by, so its next reboot may come up on the ATTACHED disk. cld warns before
-  and after the attach: do not reboot until `ls -l /dev/disk/by-label/` inside
-  the VM points only at its own disk (reformat or detach the volume).
+old root disks (bootable, from an image, or with boot labels on them):
+  their labels (cloudimg-rootfs, UEFI, BOOT) can make the VM boot from
+  them. cld attaches one only to wipe it right after, and only once you
+  typed its ID; say no and it is not attached. Without guest access it is
+  never attached.
 
 examples:
   cld attachstorage --cloud admin --serverid <server-id> --size 50 --dry-run
-  cld attachstorage --cloud admin --serverid <server-id> --disk <volume-id>
+  cld attachstorage --cloud admin --serverid <id> --disk <vol-1> --disk <vol-2>
 """
 
 _DELETE_EPILOG = """\
@@ -105,7 +111,7 @@ menus number from 0):
   11. VM name: required, free text
   12. Create this VM now?: default No; skipped with --dry-run
   Disks are never attached by createvm: once the VM is ACTIVE it prints
-  one `cld attachstorage --disk <full-id>` line per disk (re-checked).
+  one `cld attachstorage --disk ... --disk ...` command (re-checked).
 
 compute host (admin; shown after the flavor):
   a table of every compute host in the chosen AZ with free vCPU / RAM from
@@ -223,11 +229,14 @@ def build_parser():
     p_attach.add_argument("--cloud", help="cloud name from clouds.yaml")
     p_attach.add_argument("--serverid", help="target server ID "
                           "(otherwise you're prompted)")
-    p_attach.add_argument("--disk", metavar="VOLUME_ID",
-                          help="attach an existing volume by ID instead of "
-                               "creating one; attaches only if it's available, "
-                               "unattached and in this project (a bootable one "
-                               "needs an extra yes)")
+    p_attach.add_argument("--disk", metavar="VOLUME_ID", action="append",
+                          help="attach this EXISTING volume instead of "
+                               "creating one (repeat for several); only if it's "
+                               "available, unattached and in this project. An "
+                               "old root disk is attached only to be wiped")
+    p_attach.add_argument("--attach-only", action="store_true",
+                          help="attach only; skip the in-guest partition/format/"
+                               "mount step (prints the manual steps)")
     p_attach.add_argument("--size", type=int, help="volume size in GB "
                           "(not allowed with --disk)")
     p_attach.add_argument("--type", dest="type_name", help="volume type "
@@ -320,7 +329,7 @@ def run_interactive(cloud, host=None, dry_run=False):
     if not network:
         sys.exit(1)
     security = security_review(conn, project_id)
-    disks = select_disks(conn, project_id, az)
+    disks = select_disks(conn, project_id)
     name = prompt_str("VM name", default=None)
 
     spec = {
@@ -490,8 +499,8 @@ def _planned_disks(conn, spec, server_id=None):
 def cmd_attachstorage(args):
     cloud = select_cloud(args.cloud)
     attach_storage(cloud, server_arg=args.serverid, size=args.size,
-                   type_name=args.type_name, disk=args.disk,
-                   dry_run=args.dry_run)
+                   type_name=args.type_name, disks=args.disk,
+                   dry_run=args.dry_run, integrate=not args.attach_only)
     return 0
 
 

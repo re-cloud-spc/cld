@@ -15,7 +15,8 @@ commit does not un-delete a server.)
 Treat every write as irreversible and high-blast-radius. Specifically:
 
 - **Never run a write subcommand on your own initiative.** `cld createvm` (real
-  create), `cld attachstorage` (create+attach a volume), `cld deletevolume`
+  create), `cld attachstorage` (create+attach a volume, then wipe/partition/format/
+  mount it inside the VM), `cld deletevolume`
   (permanently delete a volume), and `cld init` (mint a credential / grant a role)
   are human-initiated only, and only when explicitly
   asked. To demonstrate or test, use the **read-only** paths: `python3 cld.py check
@@ -56,8 +57,10 @@ suite — a Python 3 package run directly. Subcommands:
   security → data disks (plan only) → confirm → create → optional floating IP).
   **Never attaches storage**: the disk step only selects existing volumes and prints
   `attachstorage --disk` commands after ACTIVE.
-- `cld attachstorage` — create + attach a Cinder data volume to an **existing**
-  server (capacity/quota → size/type → confirm → create+attach).
+- `cld attachstorage` — create + attach a Cinder data volume (or `--disk` existing
+  ones) to an **existing** server (capacity/quota → size/type → confirm →
+  create+attach), then partition/format/mount it INSIDE the VM with the operator
+  (guest agent, SSH fallback; `--attach-only` skips that).
 - `cld list [resource]` — read-only inventory (servers/volumes/flavors/images/
   networks/azs/hosts/capacity/clouds); default `servers`, current project unless
   `--all-projects`. `volumes` shows each Cinder volume + the VM it's attached to +
@@ -103,19 +106,32 @@ listcmd.py    read-only `cld list` orchestrator (reuses steps.render_*, volume.s
 volume.py     SDS capacity + quota display; show_capacity() / prompt_volume_spec()
 vm.py         build_payload, _reserve_port, create_vm (NO volume), _offer_rollback (default=False),
               print_summary; key_names()/_keypair_user_data() split SSH keys across Nova + cloud-init
-storage.py    attach_storage(): create+attach a new volume, OR with --disk attach an
-              EXISTING volume (_attach_existing: only if available/unattached/same-project,
-              and NEVER modifies/deletes the pre-existing volume); _offer_volume_rollback
-              (deletes only volumes cld created, never the server). After a successful
-              attach, _print_mount_help prints the in-guest device as its exact
-              /dev/disk/by-id/virtio-<vol-id[:20]> path (NOT Nova's /dev/vdX, which the
-              guest may name differently) + mount steps, and for an image/root volume
-              warns that its cloudimg-rootfs/UEFI/BOOT labels can hijack the VM's next
-              boot (_warn_boot_label_clash). cld
-              does NOT mount (no SSH keys, no hypervisor/libvirt; the API can't mount a
-              guest FS), so don't add an auto-mount path without that access.
+storage.py    attach_storage(): create+attach a new volume, OR with --disk (repeatable)
+              attach EXISTING volumes (_validate_existing: only if available/unattached/
+              same-project; one already attached to THIS server skips to the in-guest
+              step). Never deletes a pre-existing volume. An old root disk
+              (_old_root_reasons: bootable / image metadata / boot labels seen by
+              rbdpeek) is attached ONLY with guest access AND typed-ID wipe consent
+              (guestdisk.confirm_wipe), else not at all. _offer_volume_rollback deletes
+              only volumes cld created, never the server. After the attach,
+              _after_attach -> _integrate runs the in-guest step (guest.py +
+              guestdisk.py); without access, or with --attach-only, _print_mount_help
+              prints the /dev/disk/by-id/virtio-<vol-id[:20]> device + manual steps, and
+              an old root disk left unwiped gets a loud "do not reboot / detach" line.
               A failed attach re-reads the volume from Cinder (_recheck_volume) and
               reports its VERIFIED status; it never asserts "unchanged".
+guest.py      shell access INTO a VM: AgentGuest (qemu-guest-agent through the compute
+              node: ssh <user>@<service host | hypervisor host_ip>, `docker exec
+              nova_libvirt virsh qemu-agent-command`), else SshGuest (operator-named
+              user@address, sudo -n). BatchMode, normal host-key checks, ssh stdin is
+              /dev/null (it would swallow prompt answers). connect_guest() probes
+              read-only. GuestError = access lost; the guest state is then UNKNOWN.
+guestdisk.py  in-guest disk setup: inspect_disk (READ-ONLY; by virtio serial; verdict
+              blank/has-data/clash/mounted/root/missing vs boot_ids()), plan_disk
+              (interview: whole disk or GPT split, ext4/xfs, mount point, writers,
+              fstab; keep-data mounts default ro), apply_plans (re-check, confirm
+              default No, wipe/sfdisk/mkfs/mount, fstab backup+append+findmnt --verify
+              with restore, audit guest.* per step).
 deletevol.py  delete_volume(): the only delete of a pre-existing resource. Hard refusals
               (attached incl. Nova record + RBD watcher, non-final status, other project,
               snapshots -- never cascade), a report, confirm_destructive + typed ID prefix,
@@ -129,7 +145,7 @@ completion.py `cld completion bash`: completion script generated from the argpar
               --cloud names parsed by awk at TAB time (names only, never values).
 disks.py      createvm "data disks" step: select available project volumes (# as every menu,
               short IDs, bootable needs a yes), re-read them (recheck_disks) and print
-              full-UUID `attachstorage --disk` lines. Read-only; never attaches.
+              one full-UUID `attachstorage --disk ... --disk ...` command. Read-only.
 init.py       credential bootstrap (connect_admin, ensure_admin_role, merge_clouds_entry)
 answers.py    save/load a createvm spec (YAML)
 audit.py      runtime logging wiring -> logs/cld-<date>.log; audit()/warn()
@@ -154,7 +170,7 @@ python3 cld.py deletevolume --cloud <name> --volumeid <uuid> --dry-run  # report
 # Writes to the cluster — human-initiated only:
 python3 cld.py createvm --cloud <name> [--host <compute-host>] [--save-answers f.yaml]
 python3 cld.py createvm --non-interactive f.yaml
-python3 cld.py attachstorage --cloud <name> --serverid <id> [--size GB] [--type T]
+python3 cld.py attachstorage --cloud <name> --serverid <id> [--size GB] [--type T] | [--disk <uuid> ...] [--attach-only]
 python3 cld.py deletevolume --cloud <name> --volumeid <uuid>
 python3 cld.py init --project <p> [--cloud <c>] [--admin-role]
 ```
@@ -280,12 +296,26 @@ confirm a `logs/cld-*.log` line appears for each invocation.
 
 - **createvm plans disks, attachstorage attaches them.** `disks.select_disks` keeps
   #112's structure: the selection is stored in the spec (`spec["disks"]`) and is
-  **never** in the create payload; after ACTIVE (or in `--dry-run`) each disk is
-  re-read and gets a printed `cld attachstorage --disk <full-uuid>` line, whose own
-  checks (available, unattached, same project, bootable confirm) run at attach time.
-  Short IDs are for display only -- commands and warnings always use the full UUID.
-  Do not turn the printed lines into an automatic attach inside createvm without
-  explicitly changing the storage-decoupling rule above.
+  **never** in the create payload; after ACTIVE (or in `--dry-run`) the disks are
+  re-read and get ONE printed `cld attachstorage --disk <uuid> --disk ...` command,
+  whose own checks (available, unattached, same project, old-root wipe consent) run
+  at attach time. Short IDs are for display only -- commands and warnings always use
+  the full UUID. Do not turn the printed command into an automatic attach inside
+  createvm without explicitly changing the storage-decoupling rule above.
+
+- **attachstorage goes into the guest; every in-guest write is gated.** The order is
+  fixed: validate + read-only Ceph peek -> probe guest access -> typed-ID wipe consent
+  for old root disks -> confirm attach (default No) -> attach -> inspect in the guest
+  -> interview -> re-check -> "Apply this plan?" (default No) -> apply. Rules:
+  disks are found only by virtio serial; never the root disk or a mounted disk;
+  nothing with data is formatted without the typed ID (confirm_wipe, quitting =
+  keep); fstab is only appended to (by-id + nofail, never UUID=/LABEL=), backed up
+  and verified, restored on failure; mount points only under /mnt /srv /data /opt,
+  free and empty; never grub/kernel cmdline/the VM's own disk; one `audit` line per
+  in-guest step (`guest.*`). An old root disk is never attached without both guest
+  access and wipe consent, because a reboot could boot from it. `Abort` inside the
+  in-guest step is caught in `storage._integrate` (the disk IS attached, so the
+  generic "nothing created" message would be false).
 
 - **Optional `rich`.** `ui.out()` / `ui.render_table()` degrade to plain text
   (stripping inline markup) when `rich` isn't importable, so keep using the
