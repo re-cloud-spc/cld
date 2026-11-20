@@ -43,6 +43,9 @@ Already present on the controller nodes: `openstacksdk`, `rich`, `PyYAML`, and t
 pip install -r requirements.txt
 ```
 
+Optional: `rich-argparse` colours `--help`; without it the help text is the same,
+uncoloured.
+
 ## 2. One-time setup: credentials (`cld init`, per project)
 
 `cld` authenticates via `clouds.yaml` using **application credentials**. The auth

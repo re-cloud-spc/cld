@@ -22,6 +22,18 @@ from cld.ui import out, warn, err, confirm, prompt_str, Abort
 from cld.vm import build_payload, create_vm, print_summary
 from cld.answers import save_answers, load_answers
 
+try:
+    # Optional, like rich: coloured --help when installed, plain argparse otherwise.
+    from rich_argparse import RawDescriptionRichHelpFormatter
+
+    class _HelpFormatter(RawDescriptionRichHelpFormatter):
+        # Help/epilog text is plain prose with literal brackets ([y/N],
+        # [resource]); colour the structure, never parse it as rich markup.
+        help_markup = False
+        text_markup = False
+except ImportError:
+    _HelpFormatter = argparse.RawDescriptionHelpFormatter
+
 SUBCOMMANDS = {"init", "createvm", "attachstorage", "deletevolume", "check", "list",
                "completion"}
 
@@ -153,12 +165,13 @@ def build_parser():
     ap = argparse.ArgumentParser(
         prog="cld",
         description="Interactive Management Tool for Re:Cloud and NanoCloud Admins",
+        formatter_class=_HelpFormatter,
         allow_abbrev=False)
     sub = ap.add_subparsers(dest="command")
 
     p_init = sub.add_parser(
         "init", help="mint an app credential + write a clouds.yaml entry",
-        allow_abbrev=False)
+        formatter_class=_HelpFormatter, allow_abbrev=False)
     p_init.add_argument("--project", required=True,
                         help="project to scope the application credential to")
     p_init.add_argument("--cloud", help="clouds.yaml entry name (default: project)")
@@ -173,7 +186,7 @@ def build_parser():
         description="Interactive wizard that provisions ONE VM, showing live\n"
                     "capacity at every step. Optionally pins it to a compute host.\n"
                     "Creates nothing until you confirm (default No).",
-        epilog=_CREATE_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_CREATE_EPILOG, formatter_class=_HelpFormatter,
         allow_abbrev=False)
     p_create.add_argument("--cloud", help="cloud name from clouds.yaml")
     p_create.add_argument("--dry-run", action="store_true",
@@ -190,7 +203,7 @@ def build_parser():
                     "one) and attach it to an EXISTING server. Never creates or\n"
                     "touches the server itself; a failed attach can only roll back\n"
                     "the volume, and that rollback defaults to No.",
-        epilog=_ATTACH_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_ATTACH_EPILOG, formatter_class=_HelpFormatter,
         allow_abbrev=False)
     p_attach.add_argument("--cloud", help="cloud name from clouds.yaml")
     p_attach.add_argument("--serverid", help="target server ID "
@@ -213,7 +226,7 @@ def build_parser():
         description="Permanently delete ONE unattached Cinder volume -- but first\n"
                     "show what it holds, how old it is and its history, and let\n"
                     "you decide. Nothing is deleted without two confirmations.",
-        epilog=_DELETE_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_DELETE_EPILOG, formatter_class=_HelpFormatter,
         allow_abbrev=False)
     p_del.add_argument("--cloud", help="cloud name from clouds.yaml")
     p_del.add_argument("--volumeid", required=True, metavar="VOLUME_ID",
@@ -224,13 +237,13 @@ def build_parser():
 
     p_check = sub.add_parser(
         "check", help="authenticate, print the scoped project/user, and exit",
-        allow_abbrev=False)
+        formatter_class=_HelpFormatter, allow_abbrev=False)
     p_check.add_argument("--cloud", help="cloud name from clouds.yaml")
 
     p_list = sub.add_parser(
         "list", help="show read-only inventory of the cloud",
         description="Show read-only inventory of the cloud. Makes no changes.",
-        epilog=_LIST_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_LIST_EPILOG, formatter_class=_HelpFormatter,
         allow_abbrev=False)
     p_list.add_argument("resource", nargs="?", default="servers",
                         choices=RESOURCES,
@@ -250,7 +263,7 @@ def build_parser():
         description="Print a bash completion script for cld (subcommands, flags,\n"
                     "list resources, --cloud names from clouds.yaml). Local only:\n"
                     "no connection, nothing logged.",
-        epilog=_COMPLETION_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_COMPLETION_EPILOG, formatter_class=_HelpFormatter,
         allow_abbrev=False)
     p_comp.add_argument("shell", nargs="?", default="bash", choices=["bash"],
                         help="shell to generate for (default: bash)")

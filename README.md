@@ -35,6 +35,10 @@ Already present on this host: `openstacksdk` 3.0.0, `rich`, `PyYAML`, and the
 pip install -r requirements.txt
 ```
 
+Optional: `rich-argparse` colours `--help` (not packaged for Ubuntu; for one user:
+`pip install --user --no-deps --break-system-packages rich-argparse`). Without it
+`--help` is the same text, uncoloured.
+
 ## One-time setup: credentials (`cld init`)
 
 This host (`rc3-x-3`) is a **Kolla-Ansible OpenStack controller**, so the admin
