@@ -141,8 +141,10 @@ python3 cld.py createvm --non-interactive myvm.yaml
 | `--non-interactive FILE` | replay a saved spec with no prompts |
 
 Flow: **cloud (project) → availability zone → flavor → compute host (optional pin) → image → network/subnet →
-security → confirm → create** (then an optional floating IP). When the VM is
-ACTIVE, `cld` prints the exact `attachstorage` command to add a data volume.
+security → data disks (optional, planned only) → name → confirm → create** (then an
+optional floating IP). When the VM is ACTIVE, `cld` prints one exact
+`attachstorage --disk` command per planned disk, or the generic `attachstorage`
+command if none were planned.
 
 ## 5. Add a data volume (`cld attachstorage`)
 
@@ -277,6 +279,15 @@ confirmed gone (or reports `error_deleting`). Any backups remain.
   the scheduler's RAM weigher already prefers the emptiest host.
 - **Image** — size, min-disk / min-ram, visibility, whether it's signed, and how
   many servers were booted from each (boot-from-volume servers aren't counted).
+- **Data disks** (after security; optional) — this project's `available`, unattached
+  volumes with a short ID (last 4 characters, longer if that would be ambiguous),
+  name, size, bootable flag, AZ and created date. Pick by the zero-based `#`
+  (e.g. `0,2`; Enter = none). A bootable / image volume (likely an old root disk,
+  whose `cloudimg-rootfs`/`UEFI`/`BOOT` labels can hijack the new VM's boot) needs an
+  explicit yes each, default No. **Nothing is attached by `createvm`**: the disks are
+  saved in the spec, and once the VM is ACTIVE (or in `--dry-run`) each is re-read
+  and gets one `cld attachstorage --serverid <vm> --disk <full-uuid>` line; a disk
+  that is no longer available, or belongs to another project, gets no line.
 - **Network / subnet** — every usable network and its subnets with CIDR, gateway,
   and port count; external (publicly exposed) networks are flagged. The wizard then
   **assigns the next available static internal IP** for the chosen subnet (lowest

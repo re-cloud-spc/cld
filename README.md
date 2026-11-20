@@ -18,8 +18,9 @@ Subcommands:
 | `cld completion` | print a bash completion script (see [Shell completion](#shell-completion-bash)) |
 
 > **VM creation and data-volume attachment are deliberately two separate steps.**
-> `createvm` never creates volumes; afterwards you run `attachstorage` against the
-> running server. Beyond being composable, this is a safety property: a transient
+> `createvm` never creates or attaches volumes (it can *plan* existing disks and
+> print their `attachstorage --disk` commands); afterwards you run `attachstorage`
+> against the running server. Beyond being composable, this is a safety property: a transient
 > Cinder failure during attach can only ever roll back the *volume*, never the
 > healthy VM (rc3 issue #112).
 
@@ -263,6 +264,15 @@ in-guest access.
   weigher already prefers the emptiest host.
 - **Image** — size, min-disk/min-ram, visibility, signed?, and how many servers
   were booted from each (boot-from-volume servers aren't counted).
+- **Data disks** (after security; optional) — this project's `available`, unattached
+  volumes with a short ID (last 4 characters, longer if that would be ambiguous),
+  name, size, bootable flag, AZ and created date. Pick by the zero-based `#`
+  (e.g. `0,2`; Enter = none). A bootable / image volume (likely an old root disk,
+  whose `cloudimg-rootfs`/`UEFI`/`BOOT` labels can hijack the new VM's boot) needs an
+  explicit yes each, default No. **Nothing is attached by `createvm`**: the disks are
+  saved in the spec, and once the VM is ACTIVE (or in `--dry-run`) each is re-read
+  and gets one `cld attachstorage --serverid <vm> --disk <full-uuid>` line; a disk
+  that is no longer available, or belongs to another project, gets no line.
 - **Data volume** (`attachstorage`) — true SDS capacity from Cinder pool stats
   (total / free / allocated / over-subscription) **and** the project's volume quota
   vs usage. The requested size is validated against both.

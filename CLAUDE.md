@@ -53,7 +53,9 @@ suite — a Python 3 package run directly. Subcommands:
 - `cld init` — one-time-per-project: mint an application credential, write its
   `clouds.yaml` entry.
 - `cld createvm` — provision a VM (cloud → AZ → flavor → optional host pin → image → network/subnet →
-  security → confirm → create → optional floating IP). **No data-volume step.**
+  security → data disks (plan only) → confirm → create → optional floating IP).
+  **Never attaches storage**: the disk step only selects existing volumes and prints
+  `attachstorage --disk` commands after ACTIVE.
 - `cld attachstorage` — create + attach a Cinder data volume to an **existing**
   server (capacity/quota → size/type → confirm → create+attach).
 - `cld list [resource]` — read-only inventory (servers/volumes/flavors/images/
@@ -124,6 +126,9 @@ hosts.py      per-compute-host capacity from Placement (host_capacity/host_fit/r
               + the optional createvm host picker (select_host). Read-only.
 completion.py `cld completion bash`: completion script generated from the argparse parser;
               --cloud names parsed by awk at TAB time (names only, never values).
+disks.py      createvm "data disks" step: select available project volumes (zero-based #,
+              short IDs, bootable needs a yes), re-read them (recheck_disks) and print
+              full-UUID `attachstorage --disk` lines. Read-only; never attaches.
 init.py       credential bootstrap (connect_admin, ensure_admin_role, merge_clouds_entry)
 answers.py    save/load a createvm spec (YAML)
 audit.py      runtime logging wiring -> logs/cld-<date>.log; audit()/warn()
@@ -265,6 +270,15 @@ confirm a `logs/cld-*.log` line appears for each invocation.
   `create_server(host=...)` silently drops it. Do **not** switch to the old
   `az:host` forced-host syntax: it skips the scheduler filters. No round-robin
   placement: the RAM weigher already spreads, and these hosts differ in size.
+
+- **createvm plans disks, attachstorage attaches them.** `disks.select_disks` keeps
+  #112's structure: the selection is stored in the spec (`spec["disks"]`) and is
+  **never** in the create payload; after ACTIVE (or in `--dry-run`) each disk is
+  re-read and gets a printed `cld attachstorage --disk <full-uuid>` line, whose own
+  checks (available, unattached, same project, bootable confirm) run at attach time.
+  Short IDs are for display only -- commands and warnings always use the full UUID.
+  Do not turn the printed lines into an automatic attach inside createvm without
+  explicitly changing the storage-decoupling rule above.
 
 - **Optional `rich`.** `ui.out()` / `ui.render_table()` degrade to plain text
   (stripping inline markup) when `rich` isn't importable, so keep using the
