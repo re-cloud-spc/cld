@@ -47,7 +47,7 @@ after the attach, inside the VM (unless --attach-only):
     - a blank (or wiped) disk: whole disk or split into partitions; then
       for each: ext4/xfs, mount point, who may write, fstab
     - instead of a new folder, a filesystem can take over an existing one:
-      /home/<user>, /var/log, /var/lib/<name>, /var/www, /srv|/opt|/data/...
+      /home/<user>, /var/log, /var/lib/<name>, /var/tmp, /var/www, /srv|/opt|/data/...
       (copied, compared, old folder kept as <folder>.cld-old-<time>; nothing
       may use it, else cld stops) or /tmp (switches at the next reboot).
       Never all of /var, /, /etc, /usr, /boot.
