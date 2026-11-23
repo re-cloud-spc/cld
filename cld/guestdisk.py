@@ -61,7 +61,9 @@ def _q(s):
 def _gb(n):
     try:
         n = int(n)
-        return f"{n / 1024 ** 3:.1f}G" if n >= 1024 ** 3 else f"{n / 1024 ** 2:.0f}M"
+        if n >= 1024 ** 3:
+            return f"{n / 1024 ** 3:.1f}G"
+        return f"{n / 1024 ** 2:.0f}M" if n >= 1024 ** 2 else "<1M"
     except (TypeError, ValueError):
         return "?"
 
@@ -778,6 +780,9 @@ def apply_plans(g, server, plans, protected, rootdev):
             else:
                 out(f"  findmnt --verify: [green]OK[/green]  (backup "
                     f"{fstab_state['backup']})")
+                # systemd generates mount units from fstab; keep its view current.
+                _step(g, server, "-", "daemon-reload (systemd reads the new fstab)",
+                      "command -v systemctl >/dev/null || exit 0; systemctl daemon-reload")
         _fix_label_links(g, rootdev)
     except GuestError as e:
         err(f"lost access to the guest mid-way ({e}). The VM's disk state after the "
