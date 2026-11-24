@@ -225,10 +225,10 @@ Instead of a new, empty folder, a new filesystem can take over an existing folde
 
 | Folder | How |
 |---|---|
-| `/home/<user>`, `/var/lib/<name>` (docker, postgresql, mysql, ...), `/var/tmp`, `/var/www`, folders under `/srv` `/opt` `/data` | copied while nothing uses it, then switched |
+| `/home`, `/home/<user>`, `/var/lib/<name>` (docker, postgresql, mysql, ...), `/var/tmp`, `/var/www`, folders under `/srv` `/opt` `/data` | copied while nothing uses it, then switched |
 | `/var/log` | the same; journald is told to let go of `/var/log/journal` and rsyslog re-opens its files afterwards |
 | `/tmp` | not copied: the filesystem is prepared (`1777`, `nosuid,nodev`) and **switches at the next reboot** (running programs keep sockets in `/tmp`) |
-| all of `/var`, `/`, `/boot`, `/etc`, `/usr`, `/home` itself | refused |
+| all of `/var`, `/`, `/boot`, `/etc`, `/usr` | refused |
 
 The folder must be a plain directory (not a symlink, not a mount point such as a
 tmpfs `/tmp`), with no mounts below it, and use at most 85% of the new filesystem.

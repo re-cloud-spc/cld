@@ -314,7 +314,7 @@ confirm a `logs/cld-*.log` line appears for each invocation.
   nothing with data is formatted without the typed ID (confirm_wipe, quitting =
   keep); fstab is only appended to (by-id + nofail, never UUID=/LABEL=), backed up
   and verified, restored on failure; new mount points only under /mnt /srv /data
-  /opt, free and empty; a moved folder (`_MOVE_RE`: /home/<user>, /var/log,
+  /opt, free and empty; a moved folder (`_MOVE_RE`: /home, /home/<user>, /var/log,
   /var/lib/<name>, /var/tmp, /var/www, /srv /opt /data subfolders, /tmp) only when no process
   uses it, copied and compared before the switch, the old copy renamed and NEVER
   deleted by cld, never all of /var; never grub/kernel cmdline/the VM's own disk;
