@@ -170,7 +170,7 @@ python3 cld.py attachstorage --cloud admin --serverid 3f1c8d2a-... --disk dedf1d
 After the attach, `cld` goes **into the VM** (qemu-guest-agent via the compute node,
 or SSH as a fallback), finds the disk by its serial and asks you how to lay it out:
 whole disk or split into partitions, filesystem, mount point and writers for each,
-fstab. A filesystem can also **take over an existing folder** (`/home/<user>`,
+fstab. A filesystem can also **take over an existing folder** (`/home`, `/home/<user>`,
 `/var/log`, `/var/lib/<name>`, `/tmp`, ...: copied, compared, old copy kept; never all
 of `/var`). For a disk with data: which partition mounts where (read-only by default),
 wipe, or leave it. It shows the plan and asks (default No) before changing anything; fstab is

@@ -16,7 +16,7 @@ Runs through cld.guest (qemu-guest-agent, or SSH as a fallback). Three phases:
                 partitions / formats / mounts / appends to fstab. fstab is backed up
                 and verified with `findmnt --verify`; a failed verify restores it.
 
-Moving a folder onto a new filesystem (/home/<user>, /var/log, /var/lib/<name>,
+Moving a folder onto a new filesystem (/home, /home/<user>, /var/log, /var/lib/<name>,
 /var/tmp, /var/www, /srv /opt /data subfolders, /tmp): the folder must be a plain directory
 with no mounts below it, fit on the disk and be used by no process (for /var/log
 journald and rsyslog are released and re-opened by cld). The data is copied to the
@@ -45,7 +45,7 @@ LINUX_GUID = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"   # GPT "Linux filesystem da
 _MP_RE = re.compile(r"/(mnt|srv|data|opt)(/[A-Za-z0-9._-]+)+")
 _SEG = r"/[A-Za-z0-9._-]+"
 _MOVE_RE = re.compile(rf"/tmp|/var/tmp|/var/log({_SEG})?|/var/www({_SEG})?|/var/lib({_SEG})+"
-                      rf"|/home/[a-z_][a-z0-9_.-]*|/(srv|opt|data)({_SEG})+")
+                      rf"|/home(/[a-z_][a-z0-9_.-]*)?|/(srv|opt|data)({_SEG})+")
 _LOG_WRITERS = {"systemd-journal", "rsyslogd"}   # released / re-opened by cld
 _MAX_PARTS = 8
 
@@ -272,7 +272,7 @@ def _move_problem(g, path, cap):
 
 def _ask_move(g, taken, cap):
     """An existing folder to move onto the new filesystem. None = none."""
-    out("[dim]  Allowed: /home/<user>, /var/log, /var/lib/<name>, /var/tmp, /var/www, folders "
+    out("[dim]  Allowed: /home, /home/<user>, /var/log, /var/lib/<name>, /var/tmp, /var/www, folders "
         "under /srv /opt /data, /tmp. Never /, /boot, /etc, /usr or all of /var.[/dim]")
     while True:
         p = prompt_str("  Folder to move onto this disk (Enter = none)", required=False)
